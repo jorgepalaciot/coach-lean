@@ -3,7 +3,6 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import datetime, date, timedelta
-from collections import defaultdict
 
 st.set_page_config(
     page_title="Coach Lean",
@@ -12,28 +11,53 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilo móvil
+# Estilo más amigable para celular
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; height: 3.1em; font-size: 1.05em; }
-    div[data-testid="stExpander"] { margin-bottom: 0.8rem; }
+    .stButton>button {
+        width: 100%;
+        height: 3.3em;
+        font-size: 1.15em;
+        margin-bottom: 0.5rem;
+    }
+    .big-font { font-size: 1.3rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # --------------------------
-# Conexión Google Sheets
+# Conexión a Google Sheets
 # --------------------------
 @st.cache_resource
 def get_sheet():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
     client = gspread.authorize(creds)
     return client.open("CoachLeanHistorial").sheet1
 
+def obtener_historial():
+    columnas = ["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"]
+    try:
+        sheet = get_sheet()
+        data = sheet.get_all_records()
+        if not data:
+            return pd.DataFrame(columns=columnas)
+        df = pd.DataFrame(data)
+        df.columns = df.columns.str.strip()
+        for col in columnas:
+            if col not in df.columns:
+                df[col] = None
+        return df[columnas]
+    except Exception as e:
+        st.warning(f"No se pudo leer el historial: {e}")
+        return pd.DataFrame(columns=columnas)
+
 # --------------------------
-# Configuración por defecto de descansos (puedes cambiarlos en la app)
+# Configuración de grupos y rutinas fijas
 # --------------------------
-DEFAULT_REST = {
+REST_DAYS = {
     "Pecho": 2,
     "Espalda": 2,
     "Hombros": 2,
@@ -41,246 +65,247 @@ DEFAULT_REST = {
     "Tríceps": 3,
     "Piernas": 3,
     "Glúteos": 3,
-    "Abs": 1,
-    "Postura": 1   # Face pulls, etc.
+    "Abs": 1
 }
 
-# Información de ejercicios + músculos principales + técnica 3 ángulos
-EJERCICIOS = {
+# Rutinas fijas (Opción A) - Postura integrada
+RUTINAS = {
+    "Pecho": [
+        "Press Banca o mancuernas",
+        "Press Inclinado mancuernas",
+        "Aperturas",
+        "Face Pulls"           # postura
+    ],
+    "Espalda": [
+        "Dominadas o Jalón al pecho",
+        "Remo con barra o mancuerna",
+        "Face Pulls",          # postura
+        "Remo invertido o Sears"
+    ],
+    "Hombros": [
+        "Press Militar o mancuernas",
+        "Elevaciones laterales",
+        "Face Pulls",          # postura
+        "Elevaciones posteriores"
+    ],
+    "Bíceps": [
+        "Curl con barra o mancuernas",
+        "Curl martillo",
+        "Curl concentrado",
+        "Curl en banco inclinado"
+    ],
+    "Tríceps": [
+        "Fondos o Press cerrado",
+        "Extensiones en polea",
+        "Press francés",
+        "Patadas de tríceps"
+    ],
+    "Piernas": [
+        "Sentadilla o Prensa",
+        "Peso Muerto Rumano",
+        "Zancadas o Búlgaras",
+        "Elevaciones de gemelos"
+    ],
+    "Glúteos": [
+        "Hip Thrust",
+        "Peso Muerto Rumano",
+        "Patada de glúteo",
+        "Puente de glúteo"
+    ],
+    "Abs": [
+        "Dead Bug",            # postura + core
+        "Pallof Press",        # postura + core
+        "Plank",
+        "Hanging Knee Raises"
+    ]
+}
+
+# Técnica básica en 3 ángulos (se puede ir mejorando)
+TECNICA = {
     "Face Pulls": {
-        "musculos": ["Postura", "Hombros", "Espalda"],
-        "frente": "Codos altos, tira hacia la cara, rotación externa al final. Escápulas juntas.",
-        "perfil": "Tronco estable, ligera inclinación atrás. Codos terminan detrás del cuerpo.",
-        "superior": "Se ve claramente la retracción escapular y rotación externa de hombros."
-    },
-    "Press Banca o mancuernas": {
-        "musculos": ["Pecho", "Tríceps", "Hombros"],
-        "frente": "Hombros abajo y atrás, pies firmes. Mancuernas bajan controladas al pecho.",
-        "perfil": "Arco natural en la espalda, glúteos pegados. Antebrazos verticales abajo.",
-        "superior": "Codos a 45-60° del cuerpo. Pecho abierto."
-    },
-    "Remo con barra o mancuerna": {
-        "musculos": ["Espalda", "Bíceps", "Postura"],
-        "frente": "Pecho afuera, tira hacia el ombligo/bajo pecho.",
-        "perfil": "Espalda casi paralela al suelo, cabeza neutra.",
-        "superior": "Escápulas se juntan fuerte. Codos cerca del cuerpo."
+        "frente": "Codos altos, tira hacia la cara con rotación externa. Escápulas juntas al final.",
+        "perfil": "Tronco estable, codos terminan detrás del cuerpo.",
+        "superior": "Se ve la retracción escapular y rotación externa de hombros."
     },
     "Dead Bug": {
-        "musculos": ["Abs", "Postura"],
-        "frente": "Brazo y pierna contraria se extienden sin que se despegue la lumbar.",
-        "perfil": "Zona lumbar siempre pegada al suelo. Movimiento lento.",
+        "frente": "Brazo y pierna contraria se extienden sin despegar la zona lumbar.",
+        "perfil": "Lumbar siempre pegada al suelo. Movimiento lento y controlado.",
         "superior": "Cuerpo simétrico, ombligo hacia adentro."
     },
     "Pallof Press": {
-        "musculos": ["Abs", "Postura"],
-        "frente": "Brazos se extienden al frente sin rotar el tronco.",
+        "frente": "Extiende los brazos al frente sin que el tronco rote.",
         "perfil": "Cadera y hombros alineados, core muy firme.",
-        "superior": "Se observa la resistencia anti-rotación."
+        "superior": "Resistencia clara a la rotación."
     },
     "Plank": {
-        "musculos": ["Abs", "Postura"],
-        "frente": "Cuerpo en línea recta, codos bajo hombros.",
+        "frente": "Cuerpo en línea recta, codos bajo los hombros.",
         "perfil": "Cadera neutra, glúteos apretados.",
-        "superior": "Hombros lejos de las orejas, tabla perfecta."
-    },
-    "Hip Thrust": {
-        "musculos": ["Glúteos", "Piernas"],
-        "frente": "Mentón metido, empuja con los talones hasta alinear cadera.",
-        "perfil": "Tibia vertical arriba, extensión completa de cadera.",
-        "superior": "Cadera sube recta, sin inclinarse a un lado."
-    },
-    "Peso Muerto Rumano": {
-        "musculos": ["Piernas", "Glúteos", "Espalda"],
-        "frente": "Barra cerca de las piernas, espalda neutra.",
-        "perfil": "Cadera hacia atrás, ligera flexión de rodilla.",
-        "superior": "Escápulas estables, barra sigue la línea media."
-    },
-    # Puedes seguir agregando más
-}
-
-# Rutinas predefinidas (se pueden expandir)
-RUTINAS = {
-    "Upper Postura + Pecho": ["Face Pulls", "Press Banca o mancuernas", "Remo con barra o mancuerna", "Dead Bug", "Pallof Press"],
-    "Lower + Glúteos + Core": ["Hip Thrust", "Peso Muerto Rumano", "Plank", "Dead Bug"],
-    "Enfocado Abs + Postura": ["Face Pulls", "Dead Bug", "Pallof Press", "Plank"],
-    "Full Body Ligero": ["Face Pulls", "Remo con barra o mancuerna", "Hip Thrust", "Pallof Press"]
+        "superior": "Hombros lejos de las orejas."
+    }
 }
 
 # --------------------------
-# Funciones auxiliares
+# Estado de la sesión (para que no pregunte de nuevo el mismo día)
 # --------------------------
-def obtener_historial():
-    columnas = ["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"]
-    try:
-        sheet = get_sheet()
-        data = sheet.get_all_records()
-        
-        if not data:
-            return pd.DataFrame(columns=columnas)
-        
-        df = pd.DataFrame(data)
-        df.columns = df.columns.str.strip()  # Elimina espacios accidentales
-        
-        # Aseguramos que existan todas las columnas necesarias
-        for col in columnas:
-            if col not in df.columns:
-                df[col] = None
-                
-        return df[columnas]  # Devolvemos solo las columnas correctas y en orden
-    except Exception as e:
-        st.warning(f"No se pudo leer el historial: {e}")
-        return pd.DataFrame(columns=columnas)
+hoy = str(date.today())
 
+if "fecha_sesion" not in st.session_state:
+    st.session_state.fecha_sesion = None
+if "grupo_elegido" not in st.session_state:
+    st.session_state.grupo_elegido = None
+if "sesion_iniciada" not in st.session_state:
+    st.session_state.sesion_iniciada = False
 
-def ultimo_entrenamiento_por_musculo(df):
-    if df.empty or "Fecha" not in df.columns:
-        return {musculo: None for musculo in DEFAULT_REST.keys()}
+# Si cambió el día, reiniciamos
+if st.session_state.fecha_sesion != hoy:
+    st.session_state.sesion_iniciada = False
+    st.session_state.grupo_elegido = None
+    st.session_state.fecha_sesion = hoy
+
+# --------------------------
+# Funciones de recuperación
+# --------------------------
+def obtener_prioridad():
+    df = obtener_historial()
+    prioridad = []
     
-    # Limpiamos posibles espacios en los nombres de columnas
-    df.columns = df.columns.str.strip()
-    
-    if "Fecha" not in df.columns:
-        return {musculo: None for musculo in DEFAULT_REST.keys()}
-    
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-    
-    ultimo = {}
-    for musculo in DEFAULT_REST.keys():
-        # Filtramos ejercicios que trabajen ese músculo
-        mask = df["Ejercicio"].apply(
-            lambda x: musculo in EJERCICIOS.get(str(x), {}).get("musculos", [])
-        )
-        if mask.any():
-            fechas_validas = df.loc[mask, "Fecha"].dropna()
-            if not fechas_validas.empty:
-                ultimo[musculo] = fechas_validas.max().date()
-            else:
-                ultimo[musculo] = None
+    for grupo, descanso in REST_DAYS.items():
+        if df.empty or "Ejercicio" not in df.columns:
+            dias = 999
         else:
-            ultimo[musculo] = None
-    return ultimo
-
-def dias_desde(fecha):
-    if fecha is None:
-        return 999
-    return (date.today() - fecha).days
+            # Buscamos la última vez que se entrenó un ejercicio de este grupo
+            ejercicios_grupo = RUTINAS.get(grupo, [])
+            mask = df["Ejercicio"].isin(ejercicios_grupo)
+            if mask.any():
+                df_temp = df.copy()
+                df_temp["Fecha"] = pd.to_datetime(df_temp["Fecha"], errors="coerce")
+                ultima = df_temp.loc[mask, "Fecha"].max()
+                if pd.isna(ultima):
+                    dias = 999
+                else:
+                    dias = (date.today() - ultima.date()).days
+            else:
+                dias = 999
+        
+        listo = dias >= descanso
+        prioridad.append({
+            "grupo": grupo,
+            "dias": dias,
+            "listo": listo,
+            "descanso": descanso
+        })
+    
+    # Ordenamos: primero los que están listos y llevan más días
+    prioridad = sorted(prioridad, key=lambda x: (-x["listo"], -x["dias"]))
+    return prioridad
 
 # --------------------------
-# Interfaz
+# INTERFAZ PRINCIPAL
 # --------------------------
 st.title("💪 Coach Lean")
-st.caption("Postura • Abs • Cuerpo lean • Recuperación inteligente")
+st.caption("Postura • Abs • Cuerpo lean y musculoso")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🏠 Hoy", "📝 Registrar", "📊 Historial", "⚙️ Configuración"])
+# ===== PANTALLA DE INICIO DEL DÍA =====
+if not st.session_state.sesion_iniciada:
+    st.markdown("### ¿Qué quieres hacer hoy?")
+    st.write("")
 
-# ===== TAB 1: HOY =====
-with tab1:
-    st.subheader("Estado de recuperación")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🏋️ Iniciar rutina de hoy", use_container_width=True):
+            st.session_state.sesion_iniciada = True
+            st.rerun()
+    with col2:
+        if st.button("📊 Revisar estadísticas", use_container_width=True):
+            st.session_state.ver_stats = True
+            st.rerun()
 
-    df = obtener_historial()
-    ultimos = ultimo_entrenamiento_por_musculo(df)
+    if st.session_state.get("ver_stats", False):
+        st.divider()
+        st.subheader("Tu historial")
+        df = obtener_historial()
+        if not df.empty:
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Aún no hay registros")
+        if st.button("← Volver"):
+            st.session_state.ver_stats = False
+            st.rerun()
 
-    # Mostrar estado de cada músculo
-    cols = st.columns(2)
-    listos = []
-    for i, (musculo, descanso) in enumerate(DEFAULT_REST.items()):
-        dias = dias_desde(ultimos.get(musculo))
-        listo = dias >= descanso
-        if listo:
-            listos.append(musculo)
-        with cols[i % 2]:
-            color = "🟢" if listo else "🟠"
-            st.write(f"{color} **{musculo}**: {dias} días (mín. {descanso})")
+# ===== SESIÓN YA INICIADA =====
+else:
+    # Si todavía no eligió grupo
+    if st.session_state.grupo_elegido is None:
+        st.subheader("Elige el grupo muscular de hoy")
+        st.write("Ordenados por prioridad de recuperación:")
 
-    st.divider()
+        prioridad = obtener_prioridad()
 
-    if listos:
-        st.success(f"**Músculos listos hoy:** {', '.join(listos)}")
+        for item in prioridad:
+            estado = "🟢 Listo" if item["listo"] else f"🟠 {item['dias']} días (mín. {item['descanso']})"
+            if st.button(f"{item['grupo']}  —  {estado}", key=item["grupo"]):
+                st.session_state.grupo_elegido = item["grupo"]
+                st.session_state.hora_inicio = datetime.now().strftime("%H:%M")
+                st.rerun()
+
+    # Ya eligió grupo → mostrar ejercicios
     else:
-        st.info("Todos los músculos principales están en recuperación. Puedes hacer movilidad o abs suaves.")
+        grupo = st.session_state.grupo_elegido
+        st.success(f"Sesión de **{grupo}** iniciada a las {st.session_state.get('hora_inicio', '')}")
+        
+        if st.button("🔄 Cambiar de grupo muscular"):
+            st.session_state.grupo_elegido = None
+            st.rerun()
 
-    st.subheader("Recomendación de hoy")
-    # Lógica simple de recomendación
-    if "Pecho" in listos or "Postura" in listos:
-        recomendacion = "Upper Postura + Pecho"
-    elif "Piernas" in listos or "Glúteos" in listos:
-        recomendacion = "Lower + Glúteos + Core"
-    else:
-        recomendacion = "Enfocado Abs + Postura"
+        st.divider()
+        st.subheader(f"Ejercicios de {grupo}")
 
-    st.write(f"👉 Rutina recomendada: **{recomendacion}**")
+        df = obtener_historial()
 
-    sesion = st.selectbox("O elige otra rutina:", list(RUTINAS.keys()), index=list(RUTINAS.keys()).index(recomendacion))
+        for ejercicio in RUTINAS[grupo]:
+            with st.expander(f"📌 {ejercicio}", expanded=False):
+                # Mostrar último peso
+                if not df.empty and "Ejercicio" in df.columns:
+                    coincidencias = df[df["Ejercicio"] == ejercicio]
+                    if not coincidencias.empty:
+                        try:
+                            ultimo = coincidencias["Peso"].iloc[-1]
+                            st.caption(f"Última vez: **{ultimo} kg**")
+                        except:
+                            pass
 
-    st.markdown(f"### {sesion}")
-    for nombre in RUTINAS[sesion]:
-        info = EJERCICIOS.get(nombre, {})
-        st.markdown(f"**• {nombre}**")
-        with st.expander("👁️ Ver técnica en 3 ángulos"):
-            if info:
-                st.markdown("**Frente**")
-                st.info(info.get("frente", ""))
-                st.markdown("**Perfil**")
-                st.info(info.get("perfil", ""))
-                st.markdown("**Superior**")
-                st.info(info.get("superior", ""))
-            else:
-                st.write("Descripción no disponible todavía.")
+                # Técnica en 3 ángulos
+                if ejercicio in TECNICA:
+                    st.markdown("**Técnica en 3 ángulos**")
+                    st.info(f"**Frente:** {TECNICA[ejercicio]['frente']}")
+                    st.info(f"**Perfil:** {TECNICA[ejercicio]['perfil']}")
+                    st.info(f"**Superior:** {TECNICA[ejercicio]['superior']}")
 
-# ===== TAB 2: REGISTRAR =====
-with tab2:
-    st.subheader("Registrar entrenamiento")
-    df = obtener_historial()
+                # Formulario de registro
+                with st.form(key=f"form_{ejercicio}"):
+                    peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5, key=f"peso_{ejercicio}")
+                    series = st.number_input("Series", min_value=1, value=3, key=f"series_{ejercicio}")
+                    reps = st.text_input("Reps (ej: 10,9,8)", key=f"reps_{ejercicio}")
+                    rpe = st.slider("RPE", 1, 10, 7, key=f"rpe_{ejercicio}")
+                    notas = st.text_area("Notas", key=f"notas_{ejercicio}")
 
-    with st.form("registro", clear_on_submit=True):
-        fecha = st.date_input("Fecha", value=date.today())
-        ejercicio = st.selectbox("Ejercicio", sorted(list(EJERCICIOS.keys())))
+                    if st.form_submit_button("💾 Guardar este ejercicio"):
+                        try:
+                            sheet = get_sheet()
+                            sheet.append_row([
+                                str(date.today()),
+                                ejercicio,
+                                peso,
+                                series,
+                                reps,
+                                rpe,
+                                notas
+                            ])
+                            st.success("✅ Guardado correctamente")
+                            st.cache_resource.clear()
+                        except Exception as e:
+                            st.error(f"Error al guardar: {e}")
 
-        # Mostrar último peso de forma segura
-        if not df.empty and "Ejercicio" in df.columns:
-            coincidencias = df[df["Ejercicio"] == ejercicio]
-            if not coincidencias.empty and "Peso" in coincidencias.columns:
-                try:
-                    ultimo_peso = coincidencias["Peso"].iloc[-1]
-                    st.caption(f"Última vez levantaste: **{ultimo_peso} kg**")
-                except:
-                    pass
-
-        peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5)
-        series = st.number_input("Series", min_value=1, value=3)
-        reps = st.text_input("Reps (ej: 10,9,8)")
-        rpe = st.slider("RPE", 1, 10, 7)
-        notas = st.text_area("Notas")
-
-        if st.form_submit_button("💾 Guardar"):
-            try:
-                sheet = get_sheet()
-                sheet.append_row([str(fecha), ejercicio, peso, series, reps, rpe, notas])
-                st.success("✅ Guardado correctamente")
-                st.cache_resource.clear()
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# ===== TAB 3: HISTORIAL =====
-with tab3:
-    st.subheader("Historial completo")
-    df = obtener_historial()
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("Aún no hay registros")
-
-# ===== TAB 4: CONFIGURACIÓN =====
-with tab4:
-    st.subheader("Días mínimos de descanso")
-    st.write("Cambia estos valores según tu recuperación real. Se aplicarán en la recomendación.")
-    st.info("Por ahora estos valores están fijos en el código. En la próxima versión los haremos editables y guardables en Sheets.")
-
-    for musculo, dias in DEFAULT_REST.items():
-        st.write(f"**{musculo}**: {dias} días de descanso")
-
-    st.divider()
-    st.write("Próximamente aquí podrás:")
-    st.write("- Editar los días de descanso")
-    st.write("- Crear y guardar tus propias rutinas")
-    st.write("- Ajustar la prioridad de postura y abs")
+# Pie
+st.markdown("---")
+st.caption("Coach Lean • Enfocado en progresar sin perder recuperación")
