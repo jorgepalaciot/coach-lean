@@ -118,15 +118,29 @@ def obtener_historial():
         return pd.DataFrame()
 
 def ultimo_entrenamiento_por_musculo(df):
-    if df.empty:
-        return {}
+    if df.empty or "Fecha" not in df.columns:
+        return {musculo: None for musculo in DEFAULT_REST.keys()}
+    
+    # Limpiamos posibles espacios en los nombres de columnas
+    df.columns = df.columns.str.strip()
+    
+    if "Fecha" not in df.columns:
+        return {musculo: None for musculo in DEFAULT_REST.keys()}
+    
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    
     ultimo = {}
     for musculo in DEFAULT_REST.keys():
-        # Buscamos ejercicios que contengan ese músculo
-        mask = df["Ejercicio"].apply(lambda x: musculo in EJERCICIOS.get(x, {}).get("musculos", []))
+        # Filtramos ejercicios que trabajen ese músculo
+        mask = df["Ejercicio"].apply(
+            lambda x: musculo in EJERCICIOS.get(str(x), {}).get("musculos", [])
+        )
         if mask.any():
-            ultimo[musculo] = df.loc[mask, "Fecha"].max().date()
+            fechas_validas = df.loc[mask, "Fecha"].dropna()
+            if not fechas_validas.empty:
+                ultimo[musculo] = fechas_validas.max().date()
+            else:
+                ultimo[musculo] = None
         else:
             ultimo[musculo] = None
     return ultimo
