@@ -256,73 +256,73 @@ else:
                             except:
                                 pass
 
-with st.form(key=f"form_{ejercicio}"):
-    st.markdown("**Registra cada serie:**")
-    
-    # Creamos 5 series posibles
-    series_data = []
-    cols = st.columns([1, 2, 2])
-    with cols[0]:
-        st.markdown("**Serie**")
-    with cols[1]:
-        st.markdown("**Peso (kg)**")
-    with cols[2]:
-        st.markdown("**Reps**")
-
-    for i in range(1, 6):
-        c1, c2, c3 = st.columns([1, 2, 2])
-        with c1:
-            st.markdown(f"**{i}**")
-        with c2:
-            peso = st.number_input(
-                f"Peso serie {i}", 
-                min_value=0.0, 
-                step=0.5, 
-                value=0.0,
-                label_visibility="collapsed",
-                key=f"peso_{ejercicio}_{i}"
-            )
-        with c3:
-            reps = st.number_input(
-                f"Reps serie {i}", 
-                min_value=0, 
-                step=1, 
-                value=0,
-                label_visibility="collapsed",
-                key=f"reps_{ejercicio}_{i}"
-            )
-        if peso > 0 or reps > 0:
-            series_data.append(f"{peso}kg x {reps}")
-
-    rpe = st.slider("RPE (esfuerzo percibido)", 1, 10, 7, key=f"rpe_{ejercicio}")
-    notas = st.text_area("Notas (opcional)", key=f"n_{ejercicio}")
-
-    if st.form_submit_button("💾 Guardar ejercicio"):
-        if not series_data:
-            st.warning("Registra al menos una serie")
-        else:
-            try:
-                # Resumen de las series
-                resumen_series = " | ".join(series_data)
-                num_series = len(series_data)
+                with st.form(key=f"form_{ejercicio}"):
+                    st.markdown("**Registra cada serie:**")
+                    
+                    # Creamos 5 series posibles
+                    series_data = []
+                    cols = st.columns([1, 2, 2])
+                    with cols[0]:
+                        st.markdown("**Serie**")
+                    with cols[1]:
+                        st.markdown("**Peso (kg)**")
+                    with cols[2]:
+                        st.markdown("**Reps**")
                 
-                # Guardamos el peso de la primera serie como referencia principal
-                primer_peso = series_data[0].split("kg")[0] if series_data else 0
-
-                sheet = get_sheet_historial()
-                sheet.append_row([
-                    str(date.today()),
-                    ejercicio,
-                    primer_peso,
-                    num_series,
-                    resumen_series,   # Aquí se guardan todas las series detalladas
-                    rpe,
-                    notas
-                ])
-                st.success("✅ Ejercicio guardado correctamente")
-                st.cache_resource.clear()
-            except Exception as e:
-                st.error(f"Error al guardar: {e}")
+                    for i in range(1, 6):
+                        c1, c2, c3 = st.columns([1, 2, 2])
+                        with c1:
+                            st.markdown(f"**{i}**")
+                        with c2:
+                            peso = st.number_input(
+                                f"Peso serie {i}", 
+                                min_value=0.0, 
+                                step=0.5, 
+                                value=0.0,
+                                label_visibility="collapsed",
+                                key=f"peso_{ejercicio}_{i}"
+                            )
+                        with c3:
+                            reps = st.number_input(
+                                f"Reps serie {i}", 
+                                min_value=0, 
+                                step=1, 
+                                value=0,
+                                label_visibility="collapsed",
+                                key=f"reps_{ejercicio}_{i}"
+                            )
+                        if peso > 0 or reps > 0:
+                            series_data.append(f"{peso}kg x {reps}")
+                
+                    rpe = st.slider("RPE (esfuerzo percibido)", 1, 10, 7, key=f"rpe_{ejercicio}")
+                    notas = st.text_area("Notas (opcional)", key=f"n_{ejercicio}")
+                
+                    if st.form_submit_button("💾 Guardar ejercicio"):
+                        if not series_data:
+                            st.warning("Registra al menos una serie")
+                        else:
+                            try:
+                                # Resumen de las series
+                                resumen_series = " | ".join(series_data)
+                                num_series = len(series_data)
+                                
+                                # Guardamos el peso de la primera serie como referencia principal
+                                primer_peso = series_data[0].split("kg")[0] if series_data else 0
+                
+                                sheet = get_sheet_historial()
+                                sheet.append_row([
+                                    str(date.today()),
+                                    ejercicio,
+                                    primer_peso,
+                                    num_series,
+                                    resumen_series,   # Aquí se guardan todas las series detalladas
+                                    rpe,
+                                    notas
+                                ])
+                                st.success("✅ Ejercicio guardado correctamente")
+                                st.cache_resource.clear()
+                            except Exception as e:
+                                st.error(f"Error al guardar: {e}")
                             try:
                                 sheet = get_sheet_historial()
                                 sheet.append_row([
