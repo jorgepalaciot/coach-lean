@@ -159,7 +159,8 @@ BLOQUES_CHECK = ("Movilidad", "Postura", "Core")
 EQUIPO_GIMNASIO = ("polea", "máquina", "maquina", "silla romana", "banco", "smith", "prensa", "pallof")
 DIAS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 
-USUARIOS_COLUMNAS = ["Usuario", "Nombre", "Hash", "Rol", "Libro", "Activo", "Debe_cambiar", "Creado"]
+USUARIOS_COLUMNAS = ["Usuario", "Nombre", "Hash", "Rol", "Libro", "Activo", "Debe_cambiar", "Creado", "Email"]
+EMAIL_VALIDO = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 VALORES_SI = ("sí", "si", "s", "yes", "1", "true")
 MAX_FALLOS = 5
 BLOQUEO_SEG = 300
@@ -729,8 +730,21 @@ def config_auth():
     except Exception:
         return {}
 
+@st.cache_resource
+def _usuarios_listo():
+    """Agrega la columna Email a la pestaña Usuarios si venía de una versión anterior."""
+    ws = _get_sheet(NOMBRE_LIBRO, "Usuarios")
+    cabecera = [c.strip() for c in ws.row_values(1)]
+    if cabecera and "Email" not in cabecera:
+        ws.update_cell(1, len(cabecera) + 1, "Email")
+    return True
+
+def _ws_usuarios():
+    _usuarios_listo()
+    return _get_sheet(NOMBRE_LIBRO, "Usuarios")
+
 def leer_usuarios():
-    return _get_sheet(NOMBRE_LIBRO, "Usuarios").get_all_records()
+    return _ws_usuarios().get_all_records()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def listar_usuarios():
@@ -767,6 +781,53 @@ def limpiar_fallos(usuario):
     with reg["lock"]:
         reg["fallos"].pop(usuario, None)
 
+def google_disponible():
+    """True si Streamlit tiene configurado el inicio de sesión con Google ([auth] en Secrets)."""
+    try:
+        return hasattr(st, "login") and "auth" in st.secrets and bool(st.secrets["auth"].get("client_id"))
+    except Exception:
+        return False
+
+def email_google():
+    """Correo verificado de la cuenta de Google con la que el navegador ya inició sesión, o None."""
+    if not google_disponible():
+        return None
+    try:
+        if not getattr(st.user, "is_logged_in", False):
+            return None
+        verificado = getattr(st.user, "email_verified", True)
+        correo = str(getattr(st.user, "email", "") or "").strip().lower()
+        return correo if correo and verificado is not False else None
+    except Exception:
+        return None
+
+def acceso_configurado():
+    cfg = config_auth()
+    por_clave = bool(cfg.get("admin_usuario") and cfg.get("admin_password"))
+    por_google = google_disponible() and bool(cfg.get("admin_email"))
+    return por_clave or por_google
+
+def sesion_desde_google(correo):
+    """(datos de sesión, mensaje de error) a partir del correo de Google."""
+    cfg = config_auth()
+    if correo == str(cfg.get("admin_email", "")).strip().lower():
+        return {"usuario": normalizar_usuario(cfg.get("admin_usuario") or "admin"),
+                "nombre": cfg.get("admin_nombre", "Coach"), "rol": "admin",
+                "libro": NOMBRE_LIBRO, "debe_cambiar": False, "via": "google"}, None
+    try:
+        filas = leer_usuarios()
+    except Exception as e:
+        return None, f"no pude consultar los usuarios ({e})."
+    for fila in filas:
+        if str(fila.get("Email", "")).strip().lower() == correo:
+            if str(fila.get("Activo", "")).strip().lower() not in VALORES_SI:
+                return None, "tu cuenta está desactivada. Habla con tu coach."
+            usuario = normalizar_usuario(fila.get("Usuario"))
+            return {"usuario": usuario, "nombre": fila.get("Nombre") or usuario, "rol": "cliente",
+                    "libro": fila.get("Libro") or f"CoachLean_{usuario}",
+                    "debe_cambiar": False, "via": "google"}, None
+    return None, "ese correo no está registrado. Pídele a tu coach que lo agregue."
+
 def verificar_login(usuario, password):
     """Devuelve los datos de sesión si las credenciales son correctas; si no, None."""
     cfg = config_auth()
@@ -794,7 +855,7 @@ def verificar_login(usuario, password):
     return None
 
 def actualizar_usuario(usuario, **campos):
-    ws = _get_sheet(NOMBRE_LIBRO, "Usuarios")
+    ws = _ws_usuarios()
     valores = ws.get_all_values()
     if not valores:
         return False
@@ -816,13 +877,23 @@ def validar_password_nueva(nueva, repetir):
 
 def pantalla_login():
     st.title("💪 Coach Lean")
-    cfg = config_auth()
-    if not cfg.get("admin_usuario") or not cfg.get("admin_password"):
+    if not acceso_configurado():
         st.error("Falta configurar el acceso. En Streamlit: Settings → Secrets, agrega este bloque:")
         st.code('[app_auth]\nadmin_usuario = "jorge"\nadmin_password = "una-contraseña-larga-y-única"\n'
                 'admin_nombre = "Jorge"\nadmin_email = "tu-correo@gmail.com"', language="toml")
         st.stop()
     st.caption("Inicia sesión para continuar")
+
+    if google_disponible():
+        correo = email_google()
+        if correo:
+            st.warning(f"Entraste con Google como **{correo}**, pero {st.session_state.get('_aviso_google', 'ese correo no tiene acceso.')}")
+            st.button("Usar otra cuenta de Google", on_click=cerrar_sesion_google)
+        else:
+            st.button("🔐 Continuar con Google", on_click=st.login)
+        st.markdown("<div style='text-align:center;opacity:.6'>— o con usuario y contraseña —</div>",
+                    unsafe_allow_html=True)
+
     with st.form("form_login"):
         u = st.text_input("Usuario")
         p = st.text_input("Contraseña", type="password")
@@ -857,9 +928,18 @@ def pantalla_cambio_obligatorio(auth):
                 st.session_state.auth["debe_cambiar"] = False
                 st.rerun()
 
+def cerrar_sesion_google():
+    try:
+        st.logout()
+    except Exception:
+        pass
+
 def cerrar_sesion():
+    con_google = bool(email_google())
     for k in list(st.session_state.keys()):
         del st.session_state[k]
+    if con_google:
+        cerrar_sesion_google()
     st.rerun()
 
 def cambiar_password(usuario, actual, nueva):
@@ -871,9 +951,16 @@ def cambiar_password(usuario, actual, nueva):
             return None
     return "No encontré tu usuario."
 
-def crear_cliente(usuario, nombre):
+def crear_cliente(usuario, nombre, email=""):
     """Crea el cliente y su libro de datos. Devuelve (contraseña temporal, error)."""
     cfg = config_auth()
+    email = email.strip().lower()
+    if email:
+        if not EMAIL_VALIDO.match(email):
+            return None, "El correo no parece válido."
+        if email == str(cfg.get("admin_email", "")).strip().lower() or \
+                any(str(f.get("Email", "")).strip().lower() == email for f in listar_usuarios()):
+            return None, "Ese correo ya está asignado."
     if not USUARIO_VALIDO.match(usuario):
         return None, "Usuario inválido: 3 a 30 caracteres con letras minúsculas, números, punto, guion o guion bajo."
     if usuario == normalizar_usuario(cfg.get("admin_usuario", "")) or \
@@ -886,8 +973,8 @@ def crear_cliente(usuario, nombre):
         return None, (f"No pude crear el libro del cliente: {e}. "
                       "Revisa que la API de Google Drive esté habilitada para tu cuenta de servicio.")
     password = _secrets.token_urlsafe(9)
-    _get_sheet(NOMBRE_LIBRO, "Usuarios").append_row(
-        [usuario, nombre, hashear_password(password), "cliente", libro, "sí", "sí", str(hoy_lima())])
+    _ws_usuarios().append_row(
+        [usuario, nombre, hashear_password(password), "cliente", libro, "sí", "sí", str(hoy_lima()), email])
     listar_usuarios.clear()
     return password, None
 
@@ -912,9 +999,10 @@ def panel_admin():
     with st.form("form_nuevo_cliente"):
         nuevo_u = st.text_input("Usuario del cliente (minúsculas, sin espacios)")
         nuevo_n = st.text_input("Nombre")
+        nuevo_e = st.text_input("Correo de Google del cliente (opcional, para que entre sin contraseña)")
         if st.form_submit_button("➕ Crear cliente"):
             usuario = normalizar_usuario(nuevo_u)
-            password, error = crear_cliente(usuario, nuevo_n.strip() or usuario)
+            password, error = crear_cliente(usuario, nuevo_n.strip() or usuario, nuevo_e)
             if error:
                 st.error(error)
             else:
@@ -925,7 +1013,7 @@ def panel_admin():
     if not usuarios:
         st.info("Aún no tienes clientes.")
         return
-    tabla = pd.DataFrame(usuarios).reindex(columns=["Usuario", "Nombre", "Activo", "Libro", "Creado"])
+    tabla = pd.DataFrame(usuarios).reindex(columns=["Usuario", "Nombre", "Email", "Activo", "Libro", "Creado"])
     mostrar_tabla(tabla)
 
     sel = st.selectbox("Gestionar cliente", [normalizar_usuario(u["Usuario"]) for u in usuarios], key="gest_cliente")
@@ -942,6 +1030,19 @@ def panel_admin():
         if st.button("⏸️ Desactivar" if activo else "▶️ Activar", key="btn_toggle_activo"):
             actualizar_usuario(sel, Activo="no" if activo else "sí")
             st.rerun()
+    nuevo_mail = st.text_input("Correo de Google de este cliente", value=str(fila_sel.get("Email", "") or ""),
+                               key=f"mail_{sel}")
+    if st.button("💾 Guardar correo", key="btn_guardar_mail"):
+        mail = nuevo_mail.strip().lower()
+        otros = [u for u in usuarios if normalizar_usuario(u["Usuario"]) != sel]
+        if mail and not EMAIL_VALIDO.match(mail):
+            st.error("El correo no parece válido.")
+        elif mail and (mail == str(config_auth().get("admin_email", "")).strip().lower() or
+                       any(str(u.get("Email", "")).strip().lower() == mail for u in otros)):
+            st.error("Ese correo ya está asignado.")
+        else:
+            actualizar_usuario(sel, Email=mail)
+            st.success("Correo guardado.")
     confirmar = st.checkbox(f"Confirmo reemplazar la rutina de {sel} por la mía", key="conf_copiar")
     if st.button("📋 Copiar mi rutina a este cliente", key="btn_copiar") and confirmar:
         try:
@@ -953,6 +1054,14 @@ def panel_admin():
 # ---------- Puerta de entrada ----------
 if "auth" not in st.session_state:
     st.session_state.auth = None
+if st.session_state.auth is None:
+    correo_g = email_google()
+    if correo_g:
+        datos_g, aviso_g = sesion_desde_google(correo_g)
+        if datos_g:
+            st.session_state.auth = datos_g
+        else:
+            st.session_state["_aviso_google"] = aviso_g
 if st.session_state.auth is None:
     pantalla_login()
     st.stop()
@@ -1594,7 +1703,9 @@ with tab_programa:
 with tab_cuenta:
     st.subheader("⚙️ Cuenta")
     st.write(f"Usuario: **{auth['usuario']}** · {'Coach (administrador)' if es_admin else 'Cliente'}")
-    if es_admin:
+    if auth.get("via") == "google":
+        st.info(f"Entraste con tu cuenta de Google ({email_google()}). Tu sesión se mantiene en este navegador hasta que cierres sesión.")
+    elif es_admin:
         st.info("Tu contraseña de coach se cambia en Streamlit: Settings → Secrets (bloque app_auth).")
     else:
         with st.form("form_cambiar_pass"):
