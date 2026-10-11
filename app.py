@@ -37,7 +37,7 @@ def get_client():
 
 def get_sheet_historial():
     client = get_client()
-    return client.open("CoachLeanHistorial").worksheet("CoachLeanHistorial")  # o .sheet1 si se llama así
+    return client.open("CoachLeanHistorial").sheet1
 
 def get_sheet_rutinas():
     client = get_client()
