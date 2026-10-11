@@ -2,7 +2,8 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
+from collections import defaultdict
 
 st.set_page_config(
     page_title="Coach Lean",
@@ -11,7 +12,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilo más amigable para celular
 st.markdown("""
 <style>
     .stButton>button {
@@ -20,7 +20,6 @@ st.markdown("""
         font-size: 1.15em;
         margin-bottom: 0.5rem;
     }
-    .big-font { font-size: 1.3rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -28,19 +27,26 @@ st.markdown("""
 # Conexión a Google Sheets
 # --------------------------
 @st.cache_resource
-def get_sheet():
+def get_client():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
-    client = gspread.authorize(creds)
-    return client.open("CoachLeanHistorial").sheet1
+    return gspread.authorize(creds)
+
+def get_sheet_historial():
+    client = get_client()
+    return client.open("CoachLeanHistorial").worksheet("CoachLeanHistorial")  # o .sheet1 si se llama así
+
+def get_sheet_rutinas():
+    client = get_client()
+    return client.open("CoachLeanHistorial").worksheet("Rutinas")
 
 def obtener_historial():
     columnas = ["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"]
     try:
-        sheet = get_sheet()
+        sheet = get_sheet_historial()
         data = sheet.get_all_records()
         if not data:
             return pd.DataFrame(columns=columnas)
@@ -51,12 +57,42 @@ def obtener_historial():
                 df[col] = None
         return df[columnas]
     except Exception as e:
-        st.warning(f"No se pudo leer el historial: {e}")
+        st.warning(f"Error leyendo historial: {e}")
         return pd.DataFrame(columns=columnas)
 
-# --------------------------
-# Configuración de grupos y rutinas fijas
-# --------------------------
+def obtener_rutinas_activas():
+    """Lee las rutinas activas desde la pestaña Rutinas y las agrupa por grupo muscular"""
+    try:
+        sheet = get_sheet_rutinas()
+        data = sheet.get_all_records()
+        if not data:
+            return {}
+        
+        df = pd.DataFrame(data)
+        df.columns = df.columns.str.strip()
+        
+        # Filtrar solo las activas
+        if "Activo" in df.columns:
+            df = df[df["Activo"].astype(str).str.strip().str.lower() == "sí"]
+        
+        # Ordenar por la columna Orden
+        if "Orden" in df.columns:
+            df["Orden"] = pd.to_numeric(df["Orden"], errors="coerce")
+            df = df.sort_values(["Grupo", "Orden"])
+        
+        rutinas = defaultdict(list)
+        for _, row in df.iterrows():
+            grupo = str(row.get("Grupo", "")).strip()
+            ejercicio = str(row.get("Ejercicio", "")).strip()
+            if grupo and ejercicio:
+                rutinas[grupo].append(ejercicio)
+        
+        return dict(rutinas)
+    except Exception as e:
+        st.error(f"Error leyendo rutinas: {e}")
+        return {}
+
+# Días de descanso recomendados
 REST_DAYS = {
     "Pecho": 2,
     "Espalda": 2,
@@ -68,84 +104,8 @@ REST_DAYS = {
     "Abs": 1
 }
 
-# Rutinas fijas (Opción A) - Postura integrada
-RUTINAS = {
-    "Pecho": [
-        "Press Banca o mancuernas",
-        "Press Inclinado mancuernas",
-        "Aperturas",
-        "Face Pulls"           # postura
-    ],
-    "Espalda": [
-        "Dominadas o Jalón al pecho",
-        "Remo con barra o mancuerna",
-        "Face Pulls",          # postura
-        "Remo invertido o Sears"
-    ],
-    "Hombros": [
-        "Press Militar o mancuernas",
-        "Elevaciones laterales",
-        "Face Pulls",          # postura
-        "Elevaciones posteriores"
-    ],
-    "Bíceps": [
-        "Curl con barra o mancuernas",
-        "Curl martillo",
-        "Curl concentrado",
-        "Curl en banco inclinado"
-    ],
-    "Tríceps": [
-        "Fondos o Press cerrado",
-        "Extensiones en polea",
-        "Press francés",
-        "Patadas de tríceps"
-    ],
-    "Piernas": [
-        "Sentadilla o Prensa",
-        "Peso Muerto Rumano",
-        "Zancadas o Búlgaras",
-        "Elevaciones de gemelos"
-    ],
-    "Glúteos": [
-        "Hip Thrust",
-        "Peso Muerto Rumano",
-        "Patada de glúteo",
-        "Puente de glúteo"
-    ],
-    "Abs": [
-        "Dead Bug",            # postura + core
-        "Pallof Press",        # postura + core
-        "Plank",
-        "Hanging Knee Raises"
-    ]
-}
-
-# Técnica básica en 3 ángulos (se puede ir mejorando)
-TECNICA = {
-    "Face Pulls": {
-        "frente": "Codos altos, tira hacia la cara con rotación externa. Escápulas juntas al final.",
-        "perfil": "Tronco estable, codos terminan detrás del cuerpo.",
-        "superior": "Se ve la retracción escapular y rotación externa de hombros."
-    },
-    "Dead Bug": {
-        "frente": "Brazo y pierna contraria se extienden sin despegar la zona lumbar.",
-        "perfil": "Lumbar siempre pegada al suelo. Movimiento lento y controlado.",
-        "superior": "Cuerpo simétrico, ombligo hacia adentro."
-    },
-    "Pallof Press": {
-        "frente": "Extiende los brazos al frente sin que el tronco rote.",
-        "perfil": "Cadera y hombros alineados, core muy firme.",
-        "superior": "Resistencia clara a la rotación."
-    },
-    "Plank": {
-        "frente": "Cuerpo en línea recta, codos bajo los hombros.",
-        "perfil": "Cadera neutra, glúteos apretados.",
-        "superior": "Hombros lejos de las orejas."
-    }
-}
-
 # --------------------------
-# Estado de la sesión (para que no pregunte de nuevo el mismo día)
+# Estado de sesión (para el flujo del día)
 # --------------------------
 hoy = str(date.today())
 
@@ -155,58 +115,30 @@ if "grupo_elegido" not in st.session_state:
     st.session_state.grupo_elegido = None
 if "sesion_iniciada" not in st.session_state:
     st.session_state.sesion_iniciada = False
+if "ver_stats" not in st.session_state:
+    st.session_state.ver_stats = False
+if "ver_programa" not in st.session_state:
+    st.session_state.ver_programa = False
 
-# Si cambió el día, reiniciamos
+# Reiniciar si cambió el día
 if st.session_state.fecha_sesion != hoy:
     st.session_state.sesion_iniciada = False
     st.session_state.grupo_elegido = None
     st.session_state.fecha_sesion = hoy
+    st.session_state.ver_stats = False
+    st.session_state.ver_programa = False
 
 # --------------------------
-# Funciones de recuperación
-# --------------------------
-def obtener_prioridad():
-    df = obtener_historial()
-    prioridad = []
-    
-    for grupo, descanso in REST_DAYS.items():
-        if df.empty or "Ejercicio" not in df.columns:
-            dias = 999
-        else:
-            # Buscamos la última vez que se entrenó un ejercicio de este grupo
-            ejercicios_grupo = RUTINAS.get(grupo, [])
-            mask = df["Ejercicio"].isin(ejercicios_grupo)
-            if mask.any():
-                df_temp = df.copy()
-                df_temp["Fecha"] = pd.to_datetime(df_temp["Fecha"], errors="coerce")
-                ultima = df_temp.loc[mask, "Fecha"].max()
-                if pd.isna(ultima):
-                    dias = 999
-                else:
-                    dias = (date.today() - ultima.date()).days
-            else:
-                dias = 999
-        
-        listo = dias >= descanso
-        prioridad.append({
-            "grupo": grupo,
-            "dias": dias,
-            "listo": listo,
-            "descanso": descanso
-        })
-    
-    # Ordenamos: primero los que están listos y llevan más días
-    prioridad = sorted(prioridad, key=lambda x: (-x["listo"], -x["dias"]))
-    return prioridad
-
-# --------------------------
-# INTERFAZ PRINCIPAL
+# Interfaz
 # --------------------------
 st.title("💪 Coach Lean")
-st.caption("Postura • Abs • Cuerpo lean y musculoso")
+st.caption("Postura • Abs • Cuerpo lean y musculoso • Programas flexibles")
+
+rutinas = obtener_rutinas_activas()
 
 # ===== PANTALLA DE INICIO DEL DÍA =====
 if not st.session_state.sesion_iniciada:
+
     st.markdown("### ¿Qué quieres hacer hoy?")
     st.write("")
 
@@ -214,13 +146,22 @@ if not st.session_state.sesion_iniciada:
     with col1:
         if st.button("🏋️ Iniciar rutina de hoy", use_container_width=True):
             st.session_state.sesion_iniciada = True
+            st.session_state.ver_stats = False
+            st.session_state.ver_programa = False
             st.rerun()
     with col2:
         if st.button("📊 Revisar estadísticas", use_container_width=True):
             st.session_state.ver_stats = True
+            st.session_state.ver_programa = False
             st.rerun()
 
-    if st.session_state.get("ver_stats", False):
+    if st.button("📋 Ver mi programa completo", use_container_width=True):
+        st.session_state.ver_programa = True
+        st.session_state.ver_stats = False
+        st.rerun()
+
+    # Ver estadísticas
+    if st.session_state.ver_stats:
         st.divider()
         st.subheader("Tu historial")
         df = obtener_historial()
@@ -232,80 +173,112 @@ if not st.session_state.sesion_iniciada:
             st.session_state.ver_stats = False
             st.rerun()
 
-# ===== SESIÓN YA INICIADA =====
+    # Ver programa completo
+    if st.session_state.ver_programa:
+        st.divider()
+        st.subheader("📋 Mi Programa Actual (3 meses)")
+        if not rutinas:
+            st.warning("No se encontraron rutinas activas. Revisa la pestaña 'Rutinas' en Google Sheets.")
+        else:
+            for grupo, ejercicios in rutinas.items():
+                with st.expander(f"**{grupo}**"):
+                    for i, ej in enumerate(ejercicios, 1):
+                        st.write(f"{i}. {ej}")
+        if st.button("← Volver al inicio"):
+            st.session_state.ver_programa = False
+            st.rerun()
+
+# ===== SESIÓN INICIADA =====
 else:
-    # Si todavía no eligió grupo
     if st.session_state.grupo_elegido is None:
         st.subheader("Elige el grupo muscular de hoy")
-        st.write("Ordenados por prioridad de recuperación:")
+        st.caption("Ordenados por prioridad de recuperación")
 
-        prioridad = obtener_prioridad()
+        df_hist = obtener_historial()
+        prioridad = []
+
+        for grupo in rutinas.keys():
+            descanso = REST_DAYS.get(grupo, 2)
+            dias = 999
+            if not df_hist.empty and "Ejercicio" in df_hist.columns:
+                ejercicios_grupo = rutinas[grupo]
+                mask = df_hist["Ejercicio"].isin(ejercicios_grupo)
+                if mask.any():
+                    df_temp = df_hist.copy()
+                    df_temp["Fecha"] = pd.to_datetime(df_temp["Fecha"], errors="coerce")
+                    ultima = df_temp.loc[mask, "Fecha"].max()
+                    if not pd.isna(ultima):
+                        dias = (date.today() - ultima.date()).days
+
+            listo = dias >= descanso
+            prioridad.append({
+                "grupo": grupo,
+                "dias": dias,
+                "listo": listo,
+                "descanso": descanso
+            })
+
+        prioridad = sorted(prioridad, key=lambda x: (-x["listo"], -x["dias"]))
 
         for item in prioridad:
-            estado = "🟢 Listo" if item["listo"] else f"🟠 {item['dias']} días (mín. {item['descanso']})"
+            estado = "🟢 Listo" if item["listo"] else f"🟠 {item['dias']}d (mín {item['descanso']})"
             if st.button(f"{item['grupo']}  —  {estado}", key=item["grupo"]):
                 st.session_state.grupo_elegido = item["grupo"]
                 st.session_state.hora_inicio = datetime.now().strftime("%H:%M")
                 st.rerun()
 
-    # Ya eligió grupo → mostrar ejercicios
     else:
         grupo = st.session_state.grupo_elegido
         st.success(f"Sesión de **{grupo}** iniciada a las {st.session_state.get('hora_inicio', '')}")
-        
-        if st.button("🔄 Cambiar de grupo muscular"):
+
+        if st.button("🔄 Cambiar de grupo"):
             st.session_state.grupo_elegido = None
             st.rerun()
 
         st.divider()
         st.subheader(f"Ejercicios de {grupo}")
 
+        ejercicios = rutinas.get(grupo, [])
         df = obtener_historial()
 
-        for ejercicio in RUTINAS[grupo]:
-            with st.expander(f"📌 {ejercicio}", expanded=False):
-                # Mostrar último peso
-                if not df.empty and "Ejercicio" in df.columns:
-                    coincidencias = df[df["Ejercicio"] == ejercicio]
-                    if not coincidencias.empty:
-                        try:
-                            ultimo = coincidencias["Peso"].iloc[-1]
-                            st.caption(f"Última vez: **{ultimo} kg**")
-                        except:
-                            pass
+        if not ejercicios:
+            st.warning("No hay ejercicios activos para este grupo.")
+        else:
+            for ejercicio in ejercicios:
+                with st.expander(f"📌 {ejercicio}"):
+                    # Último peso
+                    if not df.empty and "Ejercicio" in df.columns:
+                        coincidencias = df[df["Ejercicio"] == ejercicio]
+                        if not coincidencias.empty:
+                            try:
+                                ultimo = coincidencias["Peso"].iloc[-1]
+                                st.caption(f"Última vez: **{ultimo} kg**")
+                            except:
+                                pass
 
-                # Técnica en 3 ángulos
-                if ejercicio in TECNICA:
-                    st.markdown("**Técnica en 3 ángulos**")
-                    st.info(f"**Frente:** {TECNICA[ejercicio]['frente']}")
-                    st.info(f"**Perfil:** {TECNICA[ejercicio]['perfil']}")
-                    st.info(f"**Superior:** {TECNICA[ejercicio]['superior']}")
+                    with st.form(key=f"form_{ejercicio}"):
+                        peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5, key=f"p_{ejercicio}")
+                        series = st.number_input("Series", min_value=1, value=3, key=f"s_{ejercicio}")
+                        reps = st.text_input("Reps (ej: 10,9,8)", key=f"r_{ejercicio}")
+                        rpe = st.slider("RPE", 1, 10, 7, key=f"rpe_{ejercicio}")
+                        notas = st.text_area("Notas", key=f"n_{ejercicio}")
 
-                # Formulario de registro
-                with st.form(key=f"form_{ejercicio}"):
-                    peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5, key=f"peso_{ejercicio}")
-                    series = st.number_input("Series", min_value=1, value=3, key=f"series_{ejercicio}")
-                    reps = st.text_input("Reps (ej: 10,9,8)", key=f"reps_{ejercicio}")
-                    rpe = st.slider("RPE", 1, 10, 7, key=f"rpe_{ejercicio}")
-                    notas = st.text_area("Notas", key=f"notas_{ejercicio}")
+                        if st.form_submit_button("💾 Guardar ejercicio"):
+                            try:
+                                sheet = get_sheet_historial()
+                                sheet.append_row([
+                                    str(date.today()),
+                                    ejercicio,
+                                    peso,
+                                    series,
+                                    reps,
+                                    rpe,
+                                    notas
+                                ])
+                                st.success("✅ Guardado")
+                                st.cache_resource.clear()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
 
-                    if st.form_submit_button("💾 Guardar este ejercicio"):
-                        try:
-                            sheet = get_sheet()
-                            sheet.append_row([
-                                str(date.today()),
-                                ejercicio,
-                                peso,
-                                series,
-                                reps,
-                                rpe,
-                                notas
-                            ])
-                            st.success("✅ Guardado correctamente")
-                            st.cache_resource.clear()
-                        except Exception as e:
-                            st.error(f"Error al guardar: {e}")
-
-# Pie
 st.markdown("---")
-st.caption("Coach Lean • Enfocado en progresar sin perder recuperación")
+st.caption("Coach Lean • Programas flexibles de 3 meses • Cambia los ejercicios desde Google Sheets")
