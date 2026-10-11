@@ -84,6 +84,73 @@ SEMANA_TIPO = [
 NIVELES_DOLOR = ["Nada", "Leve", "Moderado", "Fuerte"]
 
 # --------------------------
+# Recuperación por músculo
+# --------------------------
+# Horas que necesita cada músculo antes de volver a trabajarlo con carga.
+# Puedes cambiar estos números si tu cuerpo necesita más o menos descanso.
+RECUPERACION_H = {
+    "Pecho": 60, "Espalda": 60, "Hombros": 48, "Bíceps": 48, "Tríceps": 48,
+    "Cuádriceps": 72, "Isquios": 72, "Glúteos": 60, "Espalda baja": 72,
+    "Gemelos": 36, "Core": 24, "Postura": 24,
+}
+# Postura y core se trabajan casi a diario (poco daño muscular): no bloquean una sesión.
+NO_LIMITAN = {"Core", "Postura"}
+UMBRAL_LISTO = 0.8   # >= 80% recuperado: listo
+UMBRAL_CASI = 0.5    # entre 50% y 80%: casi listo; menos: descansando
+
+# Músculos principales de cada ejercicio de tu rutina. Si agregas ejercicios nuevos,
+# la app los deduce por el nombre, o puedes poner una columna 'Musculos' en la pestaña Rutinas.
+MUSCULOS_EJERCICIO = {
+    "Press de pecho en máquina": "Pecho, Tríceps",
+    "Jalón al pecho agarre neutro": "Espalda, Bíceps",
+    "Press de hombros en máquina": "Hombros, Tríceps",
+    "Face pull en polea": "Postura",
+    "Pájaros en máquina (deltoides posterior)": "Postura",
+    "Plancha frontal": "Core",
+    "Pallof press en polea": "Core",
+    "Prensa de piernas": "Cuádriceps, Glúteos",
+    "Sentadilla en máquina (Hack squat o Smith)": "Cuádriceps, Glúteos",
+    "Hip thrust en máquina (o puente de glúteo en Smith)": "Glúteos",
+    "Extensión de cuádriceps en máquina": "Cuádriceps",
+    "Bird dog": "Postura",
+    "Dead bug": "Core",
+    "Crunch inverso": "Core",
+    "Remo sentado en máquina con soporte de pecho": "Espalda, Bíceps",
+    "Dominadas asistidas en máquina": "Espalda, Bíceps",
+    "Press inclinado en máquina": "Pecho, Hombros",
+    "Elevaciones laterales en máquina": "Hombros",
+    "Curl de bíceps en máquina": "Bíceps",
+    "Extensión de tríceps en polea": "Tríceps",
+    "Elevaciones Y en banco inclinado": "Postura",
+    "Plancha lateral": "Core",
+    "Crunch en polea de rodillas": "Core",
+    "Curl femoral acostado": "Isquios",
+    "Hiperextensión en banco 45°": "Espalda baja, Glúteos",
+    "Abducción de cadera en máquina": "Glúteos",
+    "Patada de glúteo en polea": "Glúteos",
+    "Elevación de gemelos en máquina": "Gemelos",
+    "Remo en polea baja sentado": "Postura",
+    "Elevación de piernas colgado (silla romana)": "Core",
+    "Plancha RKC": "Core",
+}
+# Palabras clave para deducir músculos de ejercicios nuevos (se revisa en orden).
+INFERENCIA_MUSCULOS = [
+    ("tríceps", "Tríceps"), ("bíceps", "Bíceps"),
+    ("press de hombro", "Hombros, Tríceps"), ("lateral", "Hombros"),
+    ("press", "Pecho, Tríceps"), ("pecho", "Pecho, Tríceps"),
+    ("jalón", "Espalda, Bíceps"), ("dominada", "Espalda, Bíceps"), ("remo", "Espalda, Bíceps"),
+    ("hiperextensión", "Espalda baja, Glúteos"),
+    ("prensa", "Cuádriceps, Glúteos"), ("sentadilla", "Cuádriceps, Glúteos"),
+    ("zancada", "Cuádriceps, Glúteos"), ("cuádriceps", "Cuádriceps"),
+    ("hip thrust", "Glúteos"), ("glúteo", "Glúteos"), ("abducción", "Glúteos"), ("patada", "Glúteos"),
+    ("femoral", "Isquios"), ("isquio", "Isquios"), ("peso muerto", "Isquios, Glúteos"),
+    ("gemelo", "Gemelos"), ("pantorrilla", "Gemelos"),
+    ("plancha", "Core"), ("crunch", "Core"), ("abdominal", "Core"), ("dead bug", "Core"),
+    ("pallof", "Core"), ("elevación de piernas", "Core"),
+    ("face pull", "Postura"), ("pájaro", "Postura"), ("bird dog", "Postura"),
+]
+
+# --------------------------
 # Conexión a Google Sheets
 # --------------------------
 @st.cache_resource
@@ -118,6 +185,7 @@ def get_sheet(nombre):
         elif nombre == "Config":
             ws.append_row(["Clave", "Valor"])
             ws.append_row(["fecha_inicio", str(hoy_lima())])
+            ws.append_row(["modo_avance", "sesiones"])
         return ws
 
 def guardar_fila(pestana, fila):
@@ -199,27 +267,25 @@ def parse_fecha(texto):
     return None
 
 @st.cache_data(ttl=120, show_spinner=False)
-def obtener_fecha_inicio():
+def obtener_config():
+    cfg = {}
     try:
         for fila in get_sheet("Config").get_all_values()[1:]:
-            if len(fila) >= 2 and fila[0].strip() == "fecha_inicio":
-                f = parse_fecha(fila[1])
-                if f:
-                    return f
+            if len(fila) >= 2 and fila[0].strip():
+                cfg[fila[0].strip()] = fila[1].strip()
     except Exception as e:
         st.warning(f"Error leyendo configuración: {e}")
-    return hoy_lima()
+    return cfg
 
-def guardar_fecha_inicio(fecha):
+def guardar_config(clave, valor):
     ws = get_sheet("Config")
-    valores = ws.get_all_values()
-    for i, fila in enumerate(valores, start=1):
-        if fila and fila[0].strip() == "fecha_inicio":
-            ws.update_cell(i, 2, "'" + str(fecha))
+    for i, fila in enumerate(ws.get_all_values(), start=1):
+        if fila and fila[0].strip() == clave:
+            ws.update_cell(i, 2, "'" + str(valor))
             break
     else:
-        ws.append_row(["fecha_inicio", str(fecha)])
-    obtener_fecha_inicio.clear()
+        ws.append_row([clave, str(valor)])
+    obtener_config.clear()
 
 # --------------------------
 # Helpers: texto de series / reps
@@ -264,9 +330,19 @@ def series_con_descarga(series_txt, semana):
         return str(max(int(series_txt) - 1, 1))
     return series_txt
 
-def calcular_semana(inicio):
-    dias = (hoy_lima() - inicio).days
-    return 1 if dias < 0 else dias // 7 + 1
+def contar_sesiones_previas(df, inicio, hoy):
+    """Días distintos de entrenamiento desde la fecha de inicio, sin contar hoy."""
+    if df.empty:
+        return 0
+    fechas = pd.to_datetime(df["Fecha"], errors="coerce").dt.date.dropna()
+    return len({d for d in fechas if inicio <= d < hoy})
+
+def calcular_semana(inicio, modo, sesiones_previas):
+    """Por sesiones: cada 4 sesiones = 1 semana del programa. Por calendario: 7 días."""
+    if modo == "calendario":
+        dias = (hoy_lima() - inicio).days
+        return 1 if dias < 0 else dias // 7 + 1
+    return sesiones_previas // 4 + 1
 
 def fase_de_semana(semana):
     return min(3, (min(max(semana, 1), TOTAL_SEMANAS) - 1) // 4 + 1)
@@ -295,7 +371,7 @@ def registros_de_hoy(df, ejercicio, hoy):
     t["Fecha_d"] = pd.to_datetime(t["Fecha"], errors="coerce").dt.date
     return t[t["Fecha_d"] == hoy]
 
-def sugerencia(ult, reps_obj, semana, cuidado):
+def sugerencia(ult, reps_obj, semana, cuidado, dias_pausa=0):
     """Devuelve (peso_sugerido o None, motivo). Doble progresión: primero reps, luego peso."""
     try:
         series = parsear_series(ult.get("Reps"))
@@ -335,6 +411,9 @@ def sugerencia(ult, reps_obj, semana, cuidado):
         else:
             motivo = "mantén el peso"
 
+        if dias_pausa >= 14:
+            nuevo = min(nuevo, round(peso_max * 0.9 * 2) / 2)
+            motivo = f"vuelves tras {dias_pausa} días sin este ejercicio: retoma ~10% más liviano"
         if semana in SEMANAS_DESCARGA:
             nuevo = round(peso_max * 0.9 * 2) / 2
             motivo = "semana de descarga (-10%)"
@@ -357,6 +436,66 @@ def dias_desde_ultimo(df, ejercicios):
     if pd.isna(ultima):
         return 999
     return (hoy_lima() - ultima.date()).days
+
+def musculos_de(ejercicio, info):
+    """Lista de músculos principales: columna 'Musculos' > tabla del programa > deducción por nombre."""
+    info = info or {}
+    col = info.get("Musculos", "")
+    if col:
+        return [m.strip() for m in col.split(",") if m.strip()]
+    if ejercicio in MUSCULOS_EJERCICIO:
+        return [m.strip() for m in MUSCULOS_EJERCICIO[ejercicio].split(",")]
+    if info.get("Bloque") == "Movilidad":
+        return []
+    nombre = ejercicio.lower()
+    for clave, musculos in INFERENCIA_MUSCULOS:
+        if clave in nombre:
+            return [m.strip() for m in musculos.split(",")]
+    if info.get("Bloque") in ("Core", "Postura"):
+        return [info["Bloque"]]
+    return []
+
+def ultimo_por_musculo(df, guias):
+    """Última fecha en que se trabajó cada músculo según el historial."""
+    ultimos = {}
+    if df.empty:
+        return ultimos
+    t = df.copy()
+    t["Dia"] = pd.to_datetime(t["Fecha"], errors="coerce").dt.date
+    t = t.dropna(subset=["Dia"])
+    for ej, grupo in t.groupby("Ejercicio"):
+        dia = grupo["Dia"].max()
+        for m in musculos_de(str(ej), guias.get(str(ej), {})):
+            if m not in ultimos or dia > ultimos[m]:
+                ultimos[m] = dia
+    return ultimos
+
+def estado_recuperacion(ultimos, hoy):
+    """{músculo: (última fecha, días, fracción recuperada 0-1)}"""
+    rec = {}
+    for m, horas in RECUPERACION_H.items():
+        d = ultimos.get(m)
+        if d is None:
+            rec[m] = (None, None, 1.0)
+        else:
+            dias = (hoy - d).days
+            rec[m] = (d, dias, min(1.0, dias * 24 / horas))
+    return rec
+
+def preparacion_sesion(ejercicios, guias, rec):
+    """(mínimo recuperado, promedio, músculos pendientes) de los músculos que limitan la sesión."""
+    musculos = set()
+    for ej in ejercicios:
+        info = guias.get(ej, {})
+        if info.get("Bloque") == "Movilidad":
+            continue
+        musculos.update(musculos_de(ej, info))
+    musculos = {m for m in musculos if m in rec and m not in NO_LIMITAN}
+    if not musculos:
+        return 1.0, 1.0, []
+    pcts = {m: rec[m][2] for m in musculos}
+    pendientes = sorted([(m, p) for m, p in pcts.items() if p < UMBRAL_LISTO], key=lambda x: x[1])
+    return min(pcts.values()), sum(pcts.values()) / len(pcts), pendientes
 
 def checkin_de_hoy(df, hoy):
     if df.empty:
@@ -420,13 +559,41 @@ def mostrar_guia(info, series_obj, reps_obj, fase, semana):
     if info.get("Errores"):
         st.warning(f"**Errores comunes:** {info['Errores']}")
 
-def banner_programa(semana, fase):
+def panel_recuperacion(rec):
+    filas = []
+    for m, (d, dias, pct) in rec.items():
+        if pct >= UMBRAL_LISTO:
+            estado = "🟢 Listo"
+        elif pct >= UMBRAL_CASI:
+            estado = "🟠 Casi"
+        else:
+            estado = "🔴 Descansando"
+        filas.append({
+            "Músculo": m,
+            "Último entreno": d.strftime("%d %b") if d else "—",
+            "Días": "—" if dias is None else str(dias),
+            "Recuperación": int(round(pct * 100)),
+            "Estado": estado,
+        })
+    df_rec = pd.DataFrame(filas)
+    try:
+        st.dataframe(
+            df_rec, use_container_width=True, hide_index=True,
+            column_config={"Recuperación": st.column_config.ProgressColumn(
+                "Recuperación", min_value=0, max_value=100, format="%d%%")}
+        )
+    except Exception:
+        st.dataframe(df_rec, use_container_width=True, hide_index=True)
+    st.caption("Postura y core se pueden trabajar casi a diario, por eso no bloquean una sesión.")
+
+def banner_programa(semana, fase, detalle=""):
     datos = FASES[fase]
     if semana > TOTAL_SEMANAS:
         st.success("🏁 ¡Completaste las 12 semanas! Haz tus medidas y fotos finales y pide tu nueva rutina.")
         return
     extra = " · 🔻 **Semana de descarga**: una serie menos y ~10% menos de peso" if semana in SEMANAS_DESCARGA else ""
-    st.info(f"📅 **Semana {semana} de {TOTAL_SEMANAS}** · Fase {fase}: {datos['nombre']} · RPE {datos['rpe']}{extra}")
+    det = f" · {detalle}" if detalle else ""
+    st.info(f"📅 **Semana {semana} de {TOTAL_SEMANAS}** · Fase {fase}: {datos['nombre']} · RPE {datos['rpe']}{det}{extra}")
 
 # --------------------------
 # Estado de sesión
@@ -451,9 +618,16 @@ rutinas, guias = cargar_programa()
 df_hist = obtener_historial()
 df_m = obtener_medidas()
 df_check = obtener_checkin()
-fecha_inicio = obtener_fecha_inicio()
-semana = calcular_semana(fecha_inicio)
+config = obtener_config()
+fecha_inicio = parse_fecha(config.get("fecha_inicio", "")) or hoy
+modo_avance = config.get("modo_avance", "sesiones")
+if modo_avance not in ("sesiones", "calendario"):
+    modo_avance = "sesiones"
+sesiones_previas = contar_sesiones_previas(df_hist, fecha_inicio, hoy)
+semana = calcular_semana(fecha_inicio, modo_avance, sesiones_previas)
 fase = fase_de_semana(semana)
+detalle_avance = f"{sesiones_previas} sesiones completadas" if modo_avance == "sesiones" else ""
+rec = estado_recuperacion(ultimo_por_musculo(df_hist, guias), hoy)
 checkin_hoy = checkin_de_hoy(df_check, hoy)
 cuidado, avisos_checkin = evaluar_checkin(checkin_hoy)
 
@@ -474,7 +648,7 @@ with tab_entrenar:
     # ---------- Pantalla inicial ----------
     if not st.session_state.sesion_iniciada:
         st.markdown("### ¿Qué quieres hacer hoy?")
-        banner_programa(semana, fase)
+        banner_programa(semana, fase, detalle_avance)
 
         if df_hist.empty:
             st.info("Aún no tienes registros. ¡Inicia tu primera rutina! 💪")
@@ -536,33 +710,40 @@ with tab_entrenar:
     # ---------- Elegir sesión ----------
     elif st.session_state.grupo_elegido is None:
         st.subheader("Elige la sesión de hoy")
-        banner_programa(semana, fase)
+        banner_programa(semana, fase, detalle_avance)
         for aviso in avisos_checkin:
             st.warning(aviso)
         if not rutinas:
             st.warning("No hay rutinas activas. Revisa la pestaña 'Rutinas' de tu Google Sheet.")
-        st.caption("Ordenadas por prioridad de recuperación")
+        st.caption("Ordenadas según qué tan recuperados están los músculos de cada sesión. "
+                   "Si faltaste unos días, la app te propone la sesión que más lo necesita.")
 
         prioridad = []
         for grupo in rutinas.keys():
-            descanso = REST_DAYS.get(grupo, DESCANSO_POR_DEFECTO)
-            dias = dias_desde_ultimo(df_hist, rutinas[grupo])
-            prioridad.append({"grupo": grupo, "dias": dias,
-                              "listo": dias >= descanso, "descanso": descanso})
-        prioridad = sorted(prioridad, key=lambda x: (-x["listo"], -x["dias"]))
+            minimo, promedio, pendientes = preparacion_sesion(rutinas[grupo], guias, rec)
+            prioridad.append({
+                "grupo": grupo,
+                "dias": dias_desde_ultimo(df_hist, rutinas[grupo]),
+                "min": minimo, "prom": promedio, "pend": pendientes,
+                "listo": minimo >= UMBRAL_LISTO,
+            })
+        prioridad = sorted(prioridad, key=lambda x: (0, -x["dias"]) if x["listo"] else (1, -x["prom"]))
 
         for idx, item in enumerate(prioridad):
-            if item["dias"] == 999:
-                estado = "🟢 Nueva"
-            elif item["listo"]:
-                estado = "🟢 Lista"
+            if item["listo"]:
+                estado = "🟢 Lista" if item["dias"] == 999 else f"🟢 Lista (hace {item['dias']}d)"
             else:
-                estado = f"🟠 {item['dias']}d (mín {item['descanso']})"
+                m, p = item["pend"][0]
+                icono = "🟠" if item["min"] >= UMBRAL_CASI else "🔴"
+                estado = f"{icono} {m} {p:.0%}"
             marca = "⭐ " if idx == 0 else ""
             if st.button(f"{marca}{item['grupo']}  —  {estado}", key=f"grp_{item['grupo']}"):
                 st.session_state.grupo_elegido = item["grupo"]
                 st.session_state.hora_inicio = ahora_lima().strftime("%H:%M")
                 st.rerun()
+
+        with st.expander("🧩 Recuperación por músculo"):
+            panel_recuperacion(rec)
 
         if st.button("⬅️ Volver al inicio"):
             st.session_state.sesion_iniciada = False
@@ -576,6 +757,10 @@ with tab_entrenar:
             st.info("🔻 Semana de descarga: una serie menos y ~10% menos de peso. Prioriza técnica.")
         for aviso in avisos_checkin:
             st.warning(aviso)
+        _, _, pendientes_sesion = preparacion_sesion(rutinas.get(grupo, []), guias, rec)
+        if pendientes_sesion:
+            lista = ", ".join(f"{m} {p:.0%}" for m, p in pendientes_sesion)
+            st.warning(f"⚠️ Aún no se recuperan del todo: {lista}. Puedes entrenar, pero baja la carga ~10% o una serie en esos músculos.")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -661,7 +846,8 @@ with tab_entrenar:
                     fecha_ult = pd.to_datetime(ult.get("Fecha"), errors="coerce")
                     fecha_txt = fecha_ult.strftime("%d %b %Y") if not pd.isna(fecha_ult) else str(ult.get("Fecha", ""))
                     st.caption(f"Fecha: {fecha_txt}")
-                    peso_sug, motivo = sugerencia(ult, reps_obj, semana, cuidado)
+                    dias_pausa = (hoy - fecha_ult.date()).days if not pd.isna(fecha_ult) else 0
+                    peso_sug, motivo = sugerencia(ult, reps_obj, semana, cuidado, dias_pausa)
                     if peso_sug is not None:
                         st.markdown(f"💡 **Sugerencia hoy: {peso_sug:g} kg** — {motivo}")
                     elif motivo:
@@ -791,6 +977,8 @@ with tab_medidas:
 # ==================================================
 with tab_stats:
     st.subheader("📊 Tu progreso")
+    with st.expander("🧩 Recuperación por músculo"):
+        panel_recuperacion(rec)
 
     if df_hist.empty:
         st.info("Aún no hay registros de entrenamiento.")
@@ -857,7 +1045,7 @@ with tab_stats:
 # ==================================================
 with tab_programa:
     st.subheader("📋 Mi programa (12 semanas)")
-    banner_programa(semana, fase)
+    banner_programa(semana, fase, detalle_avance)
     st.progress(min(semana, TOTAL_SEMANAS) / TOTAL_SEMANAS)
 
     datos_fase = pd.DataFrame([
@@ -888,13 +1076,20 @@ with tab_programa:
     st.dataframe(pd.DataFrame(SEMANA_TIPO, columns=["Día", "Sesión"]), use_container_width=True, hide_index=True)
 
     st.divider()
-    st.markdown("**Fecha de inicio del programa**")
-    st.caption("La semana y la fase se calculan desde esta fecha. Cámbiala cuando empieces una rutina nueva.")
-    nueva_fecha = st.date_input("Inicio", value=fecha_inicio, key="fecha_inicio_input")
-    if st.button("💾 Guardar fecha de inicio"):
+    st.markdown("**Ajustes del programa**")
+    modos = {
+        "sesiones": "Por sesiones (recomendado si no vas siempre al gym)",
+        "calendario": "Por calendario (1 semana = 7 días)",
+    }
+    modo_sel = st.radio("¿Cómo avanzan las semanas y las fases?", list(modos.keys()),
+                        format_func=lambda k: modos[k], index=0 if modo_avance == "sesiones" else 1)
+    st.caption("Por sesiones: cada 4 sesiones que entrenas cuentan como 1 semana, así no pierdes la progresión si faltas.")
+    nueva_fecha = st.date_input("Fecha de inicio del programa", value=fecha_inicio, key="fecha_inicio_input")
+    if st.button("💾 Guardar ajustes"):
         try:
-            guardar_fecha_inicio(nueva_fecha)
-            st.toast("✅ Fecha guardada")
+            guardar_config("fecha_inicio", nueva_fecha)
+            guardar_config("modo_avance", modo_sel)
+            st.toast("✅ Ajustes guardados")
             st.rerun()
         except Exception as e:
             st.error(f"Error al guardar: {e}")
