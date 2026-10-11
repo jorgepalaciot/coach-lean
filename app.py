@@ -113,10 +113,14 @@ def obtener_historial():
     try:
         sheet = get_sheet()
         data = sheet.get_all_records()
-        return pd.DataFrame(data) if data else pd.DataFrame()
-    except:
-        return pd.DataFrame()
-
+        if not data:
+            return pd.DataFrame(columns=["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"])
+        df = pd.DataFrame(data)
+        df.columns = df.columns.str.strip()  # quita espacios accidentales
+        return df
+    except Exception as e:
+        st.error(f"Error al leer el historial: {e}")
+        return pd.DataFrame(columns=["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"])
 def ultimo_entrenamiento_por_musculo(df):
     if df.empty or "Fecha" not in df.columns:
         return {musculo: None for musculo in DEFAULT_REST.keys()}
