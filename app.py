@@ -136,6 +136,42 @@ def obtener_rutinas_activas():
         st.error(f"Error leyendo rutinas: {e}")
         return {}
 
+@st.cache_data(ttl=120, show_spinner=False)
+def obtener_guias():
+    """Lee la info de cada ejercicio (técnica, imagen, etc.) desde Rutinas."""
+    try:
+        data = get_sheet("Rutinas").get_all_records()
+        guias = {}
+        for fila in data:
+            ej = str(fila.get("Ejercicio", "")).strip()
+            if ej:
+                guias[ej] = {str(k).strip(): str(v).strip() for k, v in fila.items()}
+        return guias
+    except Exception as e:
+        st.warning(f"Error leyendo guías: {e}")
+        return {}
+
+def mostrar_guia(info):
+    """Muestra imagen, video y descripción del ejercicio (solo lo que esté lleno)."""
+    if not info:
+        return
+    if info.get("Imagen"):
+        st.image(info["Imagen"], use_container_width=True)
+    if info.get("Video"):
+        st.video(info["Video"])
+    if info.get("Series") or info.get("Reps"):
+        st.markdown(
+            f"🎯 **Objetivo:** {info.get('Series', '-')} series x {info.get('Reps', '-')} reps"
+            f" · descanso {info.get('Descanso', '-')}"
+        )
+    if info.get("Tecnica"):
+        st.markdown(f"**Técnica:** {info['Tecnica']}")
+    if info.get("Respiracion"):
+        st.markdown(f"**Respiración:** {info['Respiracion']}")
+    if info.get("Errores"):
+        st.warning(f"**Errores comunes:** {info['Errores']}")
+
+
 # --------------------------
 # Helpers
 # --------------------------
@@ -195,6 +231,7 @@ if st.session_state.fecha_sesion != hoy:
 # --------------------------
 st.title("💪 Coach Lean")
 st.caption("Postura • Abs • Cuerpo lean y musculoso • Programas flexibles")
+guias = obtener_guias()
 
 rutinas = obtener_rutinas_activas()
 df_hist = obtener_historial()
@@ -299,6 +336,7 @@ with tab_entrenar:
                 ult = ultimo_registro(df_hist, ejercicio)
 
                 with st.expander(f"📌 {ejercicio}", expanded=False):
+                    mostrar_guia(guias.get(ejercicio, {}))
                     if ult is not None:
                         c1, c2, c3 = st.columns(3)
                         c1.metric("Peso", f"{ult.get('Peso', '-')} kg")
