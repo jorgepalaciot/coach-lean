@@ -1,4 +1,8 @@
+import hashlib
+import hmac
 import re
+import secrets as _secrets
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, date, timedelta, timezone
@@ -150,6 +154,17 @@ INFERENCIA_MUSCULOS = [
     ("face pull", "Postura"), ("pájaro", "Postura"), ("bird dog", "Postura"),
 ]
 
+CHECKS_COLUMNAS = ["Fecha", "Ejercicio", "Bloque", "Lugar", "Notas"]
+BLOQUES_CHECK = ("Movilidad", "Postura", "Core")
+EQUIPO_GIMNASIO = ("polea", "máquina", "maquina", "silla romana", "banco", "smith", "prensa", "pallof")
+DIAS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+
+USUARIOS_COLUMNAS = ["Usuario", "Nombre", "Hash", "Rol", "Libro", "Activo", "Debe_cambiar", "Creado"]
+VALORES_SI = ("sí", "si", "s", "yes", "1", "true")
+MAX_FALLOS = 5
+BLOQUEO_SEG = 300
+ITERACIONES_HASH = 200_000
+
 # --------------------------
 # Conexión a Google Sheets
 # --------------------------
@@ -162,14 +177,35 @@ def get_client():
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
     return gspread.authorize(creds)
 
-@st.cache_resource
-def get_libro():
-    return get_client().open(NOMBRE_LIBRO)
+def libro_activo():
+    """Libro de datos del usuario que se está viendo (se guarda por sesión, nunca global)."""
+    return st.session_state.get("libro_activo", NOMBRE_LIBRO)
 
 @st.cache_resource
-def get_sheet(nombre):
+def _get_libro(nombre):
+    """Abre el libro; si es un cliente nuevo lo crea y lo comparte con el coach."""
+    gc = get_client()
+    try:
+        return gc.open(nombre)
+    except gspread.SpreadsheetNotFound:
+        if nombre == NOMBRE_LIBRO:
+            raise
+        sh = gc.create(nombre)
+        ws = sh.sheet1
+        ws.update_title("Historial")
+        ws.append_row(HISTORIAL_COLUMNAS)
+        try:
+            correo = st.secrets["app_auth"].get("admin_email", "")
+            if correo:
+                sh.share(correo, perm_type="user", role="writer", notify=False)
+        except Exception:
+            pass
+        return sh
+
+@st.cache_resource
+def _get_sheet(libro_nombre, nombre):
     """Devuelve la pestaña pedida; la crea con encabezados si no existe."""
-    libro = get_libro()
+    libro = _get_libro(libro_nombre)
     if nombre == "Historial":
         return libro.sheet1
     try:
@@ -182,24 +218,39 @@ def get_sheet(nombre):
             ws.append_row(["Grupo", "Ejercicio", "Orden", "Activo"])
         elif nombre == "Checkin":
             ws.append_row(CHECKIN_COLUMNAS)
+        elif nombre == "Checks":
+            ws.append_row(CHECKS_COLUMNAS)
+        elif nombre == "Usuarios":
+            ws.append_row(USUARIOS_COLUMNAS)
         elif nombre == "Config":
             ws.append_row(["Clave", "Valor"])
             ws.append_row(["fecha_inicio", str(hoy_lima())])
             ws.append_row(["modo_avance", "sesiones"])
         return ws
 
-def guardar_fila(pestana, fila):
-    get_sheet(pestana).append_row(fila)
+def get_sheet(pestana):
+    return _get_sheet(libro_activo(), pestana)
+
+def _limpiar_caches():
     obtener_historial.clear()
     obtener_medidas.clear()
     obtener_checkin.clear()
+    obtener_checks.clear()
+
+def guardar_fila(pestana, fila):
+    get_sheet(pestana).append_row(fila)
+    _limpiar_caches()
+
+def guardar_filas(pestana, filas):
+    get_sheet(pestana).append_rows(filas)
+    _limpiar_caches()
 
 # --------------------------
 # Lectura de datos (con caché)
 # --------------------------
-def _leer_tabla(pestana, columnas):
+def _leer_tabla(libro, pestana, columnas):
     try:
-        data = get_sheet(pestana).get_all_records()
+        data = _get_sheet(libro, pestana).get_all_records()
         if not data:
             return pd.DataFrame(columns=columnas)
         df = pd.DataFrame(data)
@@ -213,22 +264,26 @@ def _leer_tabla(pestana, columnas):
         return pd.DataFrame(columns=columnas)
 
 @st.cache_data(ttl=120, show_spinner=False)
-def obtener_historial():
-    return _leer_tabla("Historial", HISTORIAL_COLUMNAS)
+def obtener_historial(libro):
+    return _leer_tabla(libro, "Historial", HISTORIAL_COLUMNAS)
 
 @st.cache_data(ttl=120, show_spinner=False)
-def obtener_medidas():
-    return _leer_tabla("Medidas", MEDIDAS_COLUMNAS)
+def obtener_medidas(libro):
+    return _leer_tabla(libro, "Medidas", MEDIDAS_COLUMNAS)
 
 @st.cache_data(ttl=120, show_spinner=False)
-def obtener_checkin():
-    return _leer_tabla("Checkin", CHECKIN_COLUMNAS)
+def obtener_checkin(libro):
+    return _leer_tabla(libro, "Checkin", CHECKIN_COLUMNAS)
 
 @st.cache_data(ttl=120, show_spinner=False)
-def cargar_programa():
+def obtener_checks(libro):
+    return _leer_tabla(libro, "Checks", CHECKS_COLUMNAS)
+
+@st.cache_data(ttl=120, show_spinner=False)
+def cargar_programa(libro):
     """Lee 'Rutinas' una sola vez. Devuelve (rutinas por grupo, guía por ejercicio)."""
     try:
-        data = get_sheet("Rutinas").get_all_records()
+        data = _get_sheet(libro, "Rutinas").get_all_records()
     except Exception as e:
         st.error(f"Error leyendo rutinas: {e}")
         return {}, {}
@@ -267,10 +322,10 @@ def parse_fecha(texto):
     return None
 
 @st.cache_data(ttl=120, show_spinner=False)
-def obtener_config():
+def obtener_config(libro):
     cfg = {}
     try:
-        for fila in get_sheet("Config").get_all_values()[1:]:
+        for fila in _get_sheet(libro, "Config").get_all_values()[1:]:
             if len(fila) >= 2 and fila[0].strip():
                 cfg[fila[0].strip()] = fila[1].strip()
     except Exception as e:
@@ -526,16 +581,71 @@ def evaluar_checkin(row):
         cuidado = True
     return cuidado, avisos
 
+def se_puede_en_casa(ejercicio, info):
+    """Columna 'Casa' (sí/no) si existe; si no, deduce por el nombre (polea, máquina, banco...)."""
+    v = str((info or {}).get("Casa", "")).strip().lower()
+    if v in VALORES_SI:
+        return True
+    if v in ("no", "n", "0", "false"):
+        return False
+    nombre = ejercicio.lower()
+    return not any(palabra in nombre for palabra in EQUIPO_GIMNASIO)
+
+def ejercicios_de_hoy(df, hoy):
+    if df is None or df.empty:
+        return set()
+    f = pd.to_datetime(df["Fecha"], errors="coerce").dt.date
+    return set(df.loc[f == hoy, "Ejercicio"].astype(str))
+
+def dias_con_registros(df):
+    if df is None or df.empty:
+        return set()
+    return set(pd.to_datetime(df["Fecha"], errors="coerce").dt.date.dropna())
+
+def dias_por_bloque(df_hist, df_checks, guias, desde):
+    """{bloque: {días}} combinando entrenos del gym y checks (casa o gym)."""
+    res = defaultdict(set)
+    for df, usa_bloque in ((df_hist, False), (df_checks, True)):
+        if df is None or df.empty:
+            continue
+        bloques = df["Bloque"] if usa_bloque else [None] * len(df)
+        for fecha, ej, bl in zip(df["Fecha"], df["Ejercicio"], bloques):
+            dia = pd.to_datetime(fecha, errors="coerce")
+            if pd.isna(dia) or dia.date() < desde:
+                continue
+            bloque = (bl.strip() if isinstance(bl, str) else "") or guias.get(str(ej), {}).get("Bloque", "")
+            if bloque:
+                res[bloque].add(dia.date())
+    return res
+
+def racha_dias(dias, hoy):
+    d = hoy if hoy in dias else hoy - timedelta(days=1)
+    n = 0
+    while d in dias:
+        n += 1
+        d -= timedelta(days=1)
+    return n
+
 # --------------------------
 # Helpers: interfaz
 # --------------------------
 def mostrar_imagen(url):
+    for kw in ({"width": "stretch"}, {"use_container_width": True}, {"use_column_width": True}):
+        try:
+            st.image(url, **kw)
+            return
+        except TypeError:
+            continue
+        except Exception:
+            st.caption("⚠️ No se pudo cargar la imagen de este ejercicio.")
+            return
+
+def mostrar_tabla(df, hide_index=True, **kw):
+    """Tabla a todo el ancho, compatible con versiones nuevas y antiguas de Streamlit."""
     try:
-        st.image(url, use_container_width=True)
-    except TypeError:
-        st.image(url, use_column_width=True)
+        st.dataframe(df, width="stretch", hide_index=hide_index, **kw)
     except Exception:
-        st.caption("⚠️ No se pudo cargar la imagen de este ejercicio.")
+        st.dataframe(df, use_container_width=True, hide_index=hide_index, **kw)
 
 def mostrar_guia(info, series_obj, reps_obj, fase, semana):
     if not info:
@@ -577,13 +687,10 @@ def panel_recuperacion(rec):
         })
     df_rec = pd.DataFrame(filas)
     try:
-        st.dataframe(
-            df_rec, use_container_width=True, hide_index=True,
-            column_config={"Recuperación": st.column_config.ProgressColumn(
-                "Recuperación", min_value=0, max_value=100, format="%d%%")}
-        )
+        mostrar_tabla(df_rec, column_config={"Recuperación": st.column_config.ProgressColumn(
+            "Recuperación", min_value=0, max_value=100, format="%d%%")})
     except Exception:
-        st.dataframe(df_rec, use_container_width=True, hide_index=True)
+        mostrar_tabla(df_rec)
     st.caption("Postura y core se pueden trabajar casi a diario, por eso no bloquean una sesión.")
 
 def banner_programa(semana, fase, detalle=""):
@@ -594,6 +701,306 @@ def banner_programa(semana, fase, detalle=""):
     extra = " · 🔻 **Semana de descarga**: una serie menos y ~10% menos de peso" if semana in SEMANAS_DESCARGA else ""
     det = f" · {detalle}" if detalle else ""
     st.info(f"📅 **Semana {semana} de {TOTAL_SEMANAS}** · Fase {fase}: {datos['nombre']} · RPE {datos['rpe']}{det}{extra}")
+
+# --------------------------
+# Autenticación y usuarios
+# --------------------------
+USUARIO_VALIDO = re.compile(r"^[a-z0-9_.-]{3,30}$")
+
+def normalizar_usuario(texto):
+    return re.sub(r"\s+", "", str(texto or "")).lower()
+
+def hashear_password(password, sal=None, iteraciones=ITERACIONES_HASH):
+    sal = sal or _secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(sal), iteraciones).hex()
+    return f"pbkdf2${iteraciones}${sal}${h}"
+
+def verificar_hash(password, almacenado):
+    try:
+        _, it, sal, h = str(almacenado).split("$")
+        nuevo = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(sal), int(it)).hex()
+        return hmac.compare_digest(nuevo, h)
+    except Exception:
+        return False
+
+def config_auth():
+    try:
+        return dict(st.secrets["app_auth"])
+    except Exception:
+        return {}
+
+def leer_usuarios():
+    return _get_sheet(NOMBRE_LIBRO, "Usuarios").get_all_records()
+
+@st.cache_data(ttl=60, show_spinner=False)
+def listar_usuarios():
+    try:
+        return leer_usuarios()
+    except Exception:
+        return []
+
+@st.cache_resource
+def _registro_intentos():
+    return {"lock": threading.Lock(), "fallos": {}}
+
+def segundos_bloqueado(usuario):
+    reg = _registro_intentos()
+    with reg["lock"]:
+        info = reg["fallos"].get(usuario)
+        if info and info["hasta"] > time.time():
+            return int(info["hasta"] - time.time())
+    return 0
+
+def registrar_fallo(usuario):
+    reg = _registro_intentos()
+    with reg["lock"]:
+        if len(reg["fallos"]) > 5000:
+            reg["fallos"].clear()
+        info = reg["fallos"].setdefault(usuario, {"n": 0, "hasta": 0})
+        info["n"] += 1
+        if info["n"] >= MAX_FALLOS:
+            info["hasta"] = time.time() + BLOQUEO_SEG
+            info["n"] = 0
+
+def limpiar_fallos(usuario):
+    reg = _registro_intentos()
+    with reg["lock"]:
+        reg["fallos"].pop(usuario, None)
+
+def verificar_login(usuario, password):
+    """Devuelve los datos de sesión si las credenciales son correctas; si no, None."""
+    cfg = config_auth()
+    admin_u = normalizar_usuario(cfg.get("admin_usuario", ""))
+    admin_p = str(cfg.get("admin_password", ""))
+    if usuario and usuario == admin_u and admin_p:
+        if hmac.compare_digest(password.encode("utf-8"), admin_p.encode("utf-8")):
+            return {"usuario": admin_u, "nombre": cfg.get("admin_nombre", "Coach"),
+                    "rol": "admin", "libro": NOMBRE_LIBRO, "debe_cambiar": False}
+        return None
+    try:
+        filas = leer_usuarios()
+    except Exception as e:
+        st.error(f"No pude consultar los usuarios: {e}")
+        return None
+    for fila in filas:
+        if normalizar_usuario(fila.get("Usuario")) == usuario:
+            activo = str(fila.get("Activo", "")).strip().lower() in VALORES_SI
+            if activo and verificar_hash(password, fila.get("Hash", "")):
+                return {"usuario": usuario, "nombre": fila.get("Nombre") or usuario,
+                        "rol": "cliente", "libro": fila.get("Libro") or f"CoachLean_{usuario}",
+                        "debe_cambiar": str(fila.get("Debe_cambiar", "")).strip().lower() in VALORES_SI}
+            return None
+    verificar_hash(password, "pbkdf2$1$00$00")  # usuario inexistente: no revelar por tiempo de respuesta
+    return None
+
+def actualizar_usuario(usuario, **campos):
+    ws = _get_sheet(NOMBRE_LIBRO, "Usuarios")
+    valores = ws.get_all_values()
+    if not valores:
+        return False
+    cabecera = [c.strip() for c in valores[0]]
+    for i, fila in enumerate(valores[1:], start=2):
+        if fila and normalizar_usuario(fila[0]) == usuario:
+            for campo, valor in campos.items():
+                ws.update_cell(i, cabecera.index(campo) + 1, valor)
+            listar_usuarios.clear()
+            return True
+    return False
+
+def validar_password_nueva(nueva, repetir):
+    if len(nueva) < 8:
+        return "La contraseña debe tener al menos 8 caracteres."
+    if nueva != repetir:
+        return "Las contraseñas no coinciden."
+    return None
+
+def pantalla_login():
+    st.title("💪 Coach Lean")
+    cfg = config_auth()
+    if not cfg.get("admin_usuario") or not cfg.get("admin_password"):
+        st.error("Falta configurar el acceso. En Streamlit: Settings → Secrets, agrega este bloque:")
+        st.code('[app_auth]\nadmin_usuario = "jorge"\nadmin_password = "una-contraseña-larga-y-única"\n'
+                'admin_nombre = "Jorge"\nadmin_email = "tu-correo@gmail.com"', language="toml")
+        st.stop()
+    st.caption("Inicia sesión para continuar")
+    with st.form("form_login"):
+        u = st.text_input("Usuario")
+        p = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Entrar"):
+            usuario = normalizar_usuario(u)
+            espera = segundos_bloqueado(usuario)
+            if espera:
+                st.error(f"Demasiados intentos fallidos. Espera {espera // 60 + 1} min e inténtalo de nuevo.")
+            else:
+                datos = verificar_login(usuario, p)
+                if datos:
+                    limpiar_fallos(usuario)
+                    st.session_state.auth = datos
+                    st.rerun()
+                else:
+                    registrar_fallo(usuario)
+                    time.sleep(1)
+                    st.error("Usuario o contraseña incorrectos.")
+
+def pantalla_cambio_obligatorio(auth):
+    st.title("🔐 Crea tu contraseña")
+    st.caption("Es tu primer ingreso (o tu coach reseteó tu clave). Elige una contraseña personal.")
+    with st.form("form_cambio_obligatorio"):
+        nueva = st.text_input("Nueva contraseña (mínimo 8 caracteres)", type="password")
+        repetir = st.text_input("Repite la contraseña", type="password")
+        if st.form_submit_button("Guardar y continuar"):
+            error = validar_password_nueva(nueva, repetir)
+            if error:
+                st.error(error)
+            else:
+                actualizar_usuario(auth["usuario"], Hash=hashear_password(nueva), Debe_cambiar="no")
+                st.session_state.auth["debe_cambiar"] = False
+                st.rerun()
+
+def cerrar_sesion():
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.rerun()
+
+def cambiar_password(usuario, actual, nueva):
+    for fila in leer_usuarios():
+        if normalizar_usuario(fila.get("Usuario")) == usuario:
+            if not verificar_hash(actual, fila.get("Hash", "")):
+                return "La contraseña actual no es correcta."
+            actualizar_usuario(usuario, Hash=hashear_password(nueva), Debe_cambiar="no")
+            return None
+    return "No encontré tu usuario."
+
+def crear_cliente(usuario, nombre):
+    """Crea el cliente y su libro de datos. Devuelve (contraseña temporal, error)."""
+    cfg = config_auth()
+    if not USUARIO_VALIDO.match(usuario):
+        return None, "Usuario inválido: 3 a 30 caracteres con letras minúsculas, números, punto, guion o guion bajo."
+    if usuario == normalizar_usuario(cfg.get("admin_usuario", "")) or \
+            any(normalizar_usuario(f.get("Usuario")) == usuario for f in listar_usuarios()):
+        return None, "Ese usuario ya existe."
+    libro = f"CoachLean_{usuario}"
+    try:
+        _get_libro(libro)
+    except Exception as e:
+        return None, (f"No pude crear el libro del cliente: {e}. "
+                      "Revisa que la API de Google Drive esté habilitada para tu cuenta de servicio.")
+    password = _secrets.token_urlsafe(9)
+    _get_sheet(NOMBRE_LIBRO, "Usuarios").append_row(
+        [usuario, nombre, hashear_password(password), "cliente", libro, "sí", "sí", str(hoy_lima())])
+    listar_usuarios.clear()
+    return password, None
+
+def copiar_rutina_a(libro_destino):
+    origen = _get_sheet(NOMBRE_LIBRO, "Rutinas").get_all_values()
+    destino = _get_sheet(libro_destino, "Rutinas")
+    destino.clear()
+    destino.append_rows(origen, value_input_option="RAW")
+    cargar_programa.clear()
+
+def panel_admin():
+    st.markdown("### 👥 Administrar clientes")
+    cred = st.session_state.get("credencial_nueva")
+    if cred:
+        st.success(f"Entrega estos datos a **{cred['usuario']}** (se muestran una sola vez):")
+        st.code(f"Usuario: {cred['usuario']}\nContraseña temporal: {cred['password']}", language=None)
+        st.caption("Deberá cambiarla al entrar por primera vez.")
+        if st.button("Ocultar credenciales", key="ocultar_cred"):
+            del st.session_state["credencial_nueva"]
+            st.rerun()
+
+    with st.form("form_nuevo_cliente"):
+        nuevo_u = st.text_input("Usuario del cliente (minúsculas, sin espacios)")
+        nuevo_n = st.text_input("Nombre")
+        if st.form_submit_button("➕ Crear cliente"):
+            usuario = normalizar_usuario(nuevo_u)
+            password, error = crear_cliente(usuario, nuevo_n.strip() or usuario)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["credencial_nueva"] = {"usuario": usuario, "password": password}
+                st.rerun()
+
+    usuarios = [u for u in listar_usuarios() if u.get("Usuario")]
+    if not usuarios:
+        st.info("Aún no tienes clientes.")
+        return
+    tabla = pd.DataFrame(usuarios).reindex(columns=["Usuario", "Nombre", "Activo", "Libro", "Creado"])
+    mostrar_tabla(tabla)
+
+    sel = st.selectbox("Gestionar cliente", [normalizar_usuario(u["Usuario"]) for u in usuarios], key="gest_cliente")
+    fila_sel = next(u for u in usuarios if normalizar_usuario(u["Usuario"]) == sel)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔑 Resetear contraseña", key="btn_reset_pass"):
+            nueva = _secrets.token_urlsafe(9)
+            actualizar_usuario(sel, Hash=hashear_password(nueva), Debe_cambiar="sí")
+            st.session_state["credencial_nueva"] = {"usuario": sel, "password": nueva}
+            st.rerun()
+    with c2:
+        activo = str(fila_sel.get("Activo", "")).strip().lower() in VALORES_SI
+        if st.button("⏸️ Desactivar" if activo else "▶️ Activar", key="btn_toggle_activo"):
+            actualizar_usuario(sel, Activo="no" if activo else "sí")
+            st.rerun()
+    confirmar = st.checkbox(f"Confirmo reemplazar la rutina de {sel} por la mía", key="conf_copiar")
+    if st.button("📋 Copiar mi rutina a este cliente", key="btn_copiar") and confirmar:
+        try:
+            copiar_rutina_a(fila_sel.get("Libro") or f"CoachLean_{sel}")
+            st.success("Rutina copiada. El cliente la verá al recargar su app.")
+        except Exception as e:
+            st.error(f"No pude copiar la rutina: {e}")
+
+# ---------- Puerta de entrada ----------
+if "auth" not in st.session_state:
+    st.session_state.auth = None
+if st.session_state.auth is None:
+    pantalla_login()
+    st.stop()
+auth = st.session_state.auth
+if auth.get("debe_cambiar"):
+    pantalla_cambio_obligatorio(auth)
+    st.stop()
+es_admin = auth["rol"] == "admin"
+
+# ---------- Cabecera y cuenta que se está viendo ----------
+st.title("💪 Coach Lean")
+cab1, cab2 = st.columns([3, 1])
+cab1.caption(f"👤 {auth['nombre']}" + (" · Coach" if es_admin else ""))
+if cab2.button("Salir", key="btn_salir"):
+    cerrar_sesion()
+st.caption("Postura • Abs • Cuerpo lean y musculoso • Programa de 12 semanas")
+
+cuenta_activa = auth["usuario"]
+libro_cuenta = auth["libro"]
+if es_admin:
+    clientes = [c for c in listar_usuarios()
+                if c.get("Usuario") and str(c.get("Activo", "")).strip().lower() in VALORES_SI]
+    if clientes:
+        opciones = [auth["usuario"]] + [normalizar_usuario(c["Usuario"]) for c in clientes]
+        etiquetas = {auth["usuario"]: "Mi cuenta"}
+        etiquetas.update({normalizar_usuario(c["Usuario"]): f"{c.get('Nombre') or c['Usuario']} ({c['Usuario']})"
+                          for c in clientes})
+        if st.session_state.get("usuario_activo") not in opciones:
+            st.session_state["usuario_activo"] = auth["usuario"]
+        cuenta_activa = st.selectbox("Viendo los datos de:", opciones,
+                                     format_func=lambda u: etiquetas.get(u, u), key="usuario_activo")
+        if cuenta_activa != auth["usuario"]:
+            fila_c = next(c for c in clientes if normalizar_usuario(c["Usuario"]) == cuenta_activa)
+            libro_cuenta = fila_c.get("Libro") or f"CoachLean_{cuenta_activa}"
+            st.warning(f"Estás viendo (y registrando en) la cuenta de **{etiquetas[cuenta_activa]}**.")
+
+if st.session_state.get("_cuenta_prev", cuenta_activa) != cuenta_activa:
+    st.session_state.sesion_iniciada = False
+    st.session_state.grupo_elegido = None
+    st.session_state.checkin_saltado = False
+st.session_state["_cuenta_prev"] = cuenta_activa
+st.session_state["libro_activo"] = libro_cuenta
+
+try:
+    _get_libro(libro_cuenta)
+except Exception as e:
+    st.error(f"No pude abrir los datos de esta cuenta: {e}")
+    st.stop()
 
 # --------------------------
 # Estado de sesión
@@ -614,11 +1021,13 @@ if st.session_state.fecha_sesion != str(hoy):
 # --------------------------
 # Datos
 # --------------------------
-rutinas, guias = cargar_programa()
-df_hist = obtener_historial()
-df_m = obtener_medidas()
-df_check = obtener_checkin()
-config = obtener_config()
+libro = libro_activo()
+rutinas, guias = cargar_programa(libro)
+df_hist = obtener_historial(libro)
+df_m = obtener_medidas(libro)
+df_check = obtener_checkin(libro)
+df_checks = obtener_checks(libro)
+config = obtener_config(libro)
 fecha_inicio = parse_fecha(config.get("fecha_inicio", "")) or hoy
 modo_avance = config.get("modo_avance", "sesiones")
 if modo_avance not in ("sesiones", "calendario"):
@@ -627,18 +1036,18 @@ sesiones_previas = contar_sesiones_previas(df_hist, fecha_inicio, hoy)
 semana = calcular_semana(fecha_inicio, modo_avance, sesiones_previas)
 fase = fase_de_semana(semana)
 detalle_avance = f"{sesiones_previas} sesiones completadas" if modo_avance == "sesiones" else ""
-rec = estado_recuperacion(ultimo_por_musculo(df_hist, guias), hoy)
+registros_todos = pd.concat([df_hist[["Fecha", "Ejercicio"]], df_checks[["Fecha", "Ejercicio"]]], ignore_index=True)
+rec = estado_recuperacion(ultimo_por_musculo(registros_todos, guias), hoy)
+checks_hoy = ejercicios_de_hoy(df_checks, hoy)
+gym_hoy = ejercicios_de_hoy(df_hist, hoy)
 checkin_hoy = checkin_de_hoy(df_check, hoy)
 cuidado, avisos_checkin = evaluar_checkin(checkin_hoy)
 
 # --------------------------
 # Interfaz
 # --------------------------
-st.title("💪 Coach Lean")
-st.caption("Postura • Abs • Cuerpo lean y musculoso • Programa de 12 semanas")
-
-tab_entrenar, tab_medidas, tab_stats, tab_programa = st.tabs(
-    ["🏋️ Entrenar", "📏 Medidas", "📊 Estadísticas", "📋 Programa"]
+tab_entrenar, tab_casa, tab_medidas, tab_stats, tab_programa, tab_cuenta = st.tabs(
+    ["🏋️ Entrenar", "🏠 Casa", "📏 Medidas", "📊 Estadísticas", "📋 Programa", "⚙️ Cuenta"]
 )
 
 # ==================================================
@@ -823,9 +1232,14 @@ with tab_entrenar:
             hechos_hoy = registros_de_hoy(df_hist, ejercicio, hoy)
 
             if bloque == "Movilidad":
-                with st.expander(f"🧘 {ejercicio}", expanded=False):
+                hecha = ejercicio in checks_hoy
+                with st.expander(f"{'✅' if hecha else '🧘'} {ejercicio}", expanded=False):
                     mostrar_guia(info, series_obj, reps_obj, fase, semana)
-                    st.caption("Movilidad: no necesitas registrarla, solo hazla antes de empezar.")
+                    if hecha:
+                        st.success("✅ Marcada como hecha hoy")
+                    elif st.button("✔ Marcar como hecha", key=f"mov_{grupo}_{ejercicio}"):
+                        guardar_filas("Checks", [[str(hoy), ejercicio, "Movilidad", "Gym", ""]])
+                        st.rerun()
                 continue
 
             icono = "✅" if not hechos_hoy.empty else "📌"
@@ -915,6 +1329,86 @@ with tab_entrenar:
                                 st.error(f"Error al guardar: {e}")
 
 # ==================================================
+# TAB: CASA (checks de postura, core y movilidad)
+# ==================================================
+with tab_casa:
+    st.subheader("🏠 Postura y core: tu seguimiento diario")
+    st.caption("Marca lo que hiciste, en casa o en el gym. Cuenta igual para tu meta semanal (3-4 veces).")
+
+    lunes = hoy - timedelta(days=hoy.weekday())
+    dias_bl = dias_por_bloque(df_hist, df_checks, guias, hoy - timedelta(days=60))
+    m1, m2, m3 = st.columns(3)
+    for col, nombre_bl in ((m1, "Postura"), (m2, "Core"), (m3, "Movilidad")):
+        dias_sem = {d for d in dias_bl[nombre_bl] if d >= lunes}
+        col.metric(f"{nombre_bl} (semana)", f"{len(dias_sem)} días")
+    racha = racha_dias(dias_bl["Postura"], hoy)
+    if racha >= 2:
+        st.success(f"🔥 Racha de postura: {racha} días seguidos")
+
+    lugar = st.radio("¿Dónde lo hiciste?", ["Casa", "Gym"], horizontal=True, key="lugar_check")
+    solo_casa = st.checkbox("Mostrar solo ejercicios sin máquinas (para casa)", value=True, key="solo_casa")
+
+    vistos, lista = set(), []
+    for _grupo, _ejs in rutinas.items():
+        for _ej in _ejs:
+            _info = guias.get(_ej, {})
+            if _info.get("Bloque") in BLOQUES_CHECK and _ej not in vistos:
+                vistos.add(_ej)
+                lista.append((_ej, _info))
+    if solo_casa:
+        lista = [(e, i) for e, i in lista if se_puede_en_casa(e, i)]
+
+    if not lista:
+        st.info("Aún no hay ejercicios de postura, core o movilidad en tu programa.")
+    else:
+        if "cnt_casa" not in st.session_state:
+            st.session_state["cnt_casa"] = 0
+        cnt = st.session_state["cnt_casa"]
+        with st.form(f"form_casa_{cnt}"):
+            marcados = []
+            for bloque_c in BLOQUES_CHECK:
+                items = [(e, i) for e, i in lista if i.get("Bloque") == bloque_c]
+                if not items:
+                    continue
+                st.markdown(f"##### {bloque_c}")
+                for ej, info in items:
+                    s_obj, r_obj = objetivo_fase(info, fase)
+                    etiqueta = f"{ej} · {s_obj} x {r_obj}" if (s_obj or r_obj) else ej
+                    if ej in checks_hoy or ej in gym_hoy:
+                        st.markdown(f"✅ {etiqueta} — hecho hoy")
+                    elif st.checkbox(etiqueta, key=f"chk_{cnt}_{ej}"):
+                        marcados.append((ej, bloque_c))
+                    with st.expander("ℹ️ Cómo hacerlo"):
+                        mostrar_guia(info, s_obj, r_obj, fase, semana)
+            notas_c = st.text_input("Notas (opcional)", key=f"nota_casa_{cnt}")
+            if st.form_submit_button("💾 Guardar checks"):
+                if not marcados:
+                    st.warning("Marca al menos un ejercicio")
+                else:
+                    try:
+                        guardar_filas("Checks", [[str(hoy), e, b, lugar, notas_c] for e, b in marcados])
+                        st.session_state["cnt_casa"] += 1
+                        st.toast("✅ Checks guardados")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al guardar: {e}")
+
+    st.divider()
+    st.markdown("**Últimos 14 días**")
+    dias_fuerza = dias_con_registros(df_hist)
+    filas_14 = []
+    for i in range(14):
+        d = hoy - timedelta(days=i)
+        filas_14.append({
+            "Día": f"{DIAS_ES[d.weekday()]} {d.day:02d}",
+            "Fuerza": "✅" if d in dias_fuerza else "·",
+            "Postura": "✅" if d in dias_bl["Postura"] else "·",
+            "Core": "✅" if d in dias_bl["Core"] else "·",
+            "Movilidad": "✅" if d in dias_bl["Movilidad"] else "·",
+        })
+    mostrar_tabla(pd.DataFrame(filas_14))
+
+# ==================================================
 # TAB: MEDIDAS
 # ==================================================
 with tab_medidas:
@@ -968,7 +1462,7 @@ with tab_medidas:
             c2.metric("Cambio total", f"{ultimo - reg[medida_sel].iloc[0]:+.1f} {unidad_m}")
         st.divider()
         st.markdown("**Historial completo**")
-        st.dataframe(df_m.iloc[::-1], use_container_width=True, hide_index=True)
+        mostrar_tabla(df_m.iloc[::-1])
     else:
         st.info("Todavía no hay medidas registradas.")
 
@@ -1003,8 +1497,9 @@ with tab_stats:
         st.markdown("**Esta semana** (meta: postura y core 3-4 veces)")
         w1, w2, w3 = st.columns(3)
         w1.metric("Sesiones de fuerza", sem_df["Dia"].nunique())
-        w2.metric("Días con postura", sem_df[sem_df["Bloque"] == "Postura"]["Dia"].nunique())
-        w3.metric("Días con core", sem_df[sem_df["Bloque"] == "Core"]["Dia"].nunique())
+        dias_sem_bl = dias_por_bloque(df_hist, df_checks, guias, lunes)
+        w2.metric("Días con postura", len(dias_sem_bl["Postura"]))
+        w3.metric("Días con core", len(dias_sem_bl["Core"]))
 
         st.divider()
         st.markdown("**Sesiones por semana**")
@@ -1021,10 +1516,7 @@ with tab_stats:
         if not sub_p.empty and sub_p["Peso_num"].max() > 0:
             st.line_chart(sub_p.set_index("Fecha_dt")[["Peso_num"]].rename(columns={"Peso_num": "Peso (kg)"}))
             st.metric("🏆 Peso máximo registrado", f"{sub_p['Peso_num'].max():g} kg")
-        st.dataframe(
-            sub[["Fecha", "Peso", "Series", "Reps", "RPE", "Notas"]].iloc[::-1],
-            use_container_width=True, hide_index=True
-        )
+        mostrar_tabla(sub[["Fecha", "Peso", "Series", "Reps", "RPE", "Notas"]].iloc[::-1])
 
         st.divider()
         st.markdown("**🏆 Marcas personales (peso máximo)**")
@@ -1032,13 +1524,13 @@ with tab_stats:
                    .query("Peso_num > 0")
                    .groupby("Ejercicio")["Peso_num"].max()
                    .sort_values(ascending=False))
-        st.dataframe(prs.rename("Peso máx (kg)"), use_container_width=True)
+        mostrar_tabla(prs.rename("Peso máx (kg)"), hide_index=False)
 
     if not df_check.empty:
         st.divider()
         with st.expander("🩺 Check-ins recientes"):
             st.caption("Dolor: 0 = nada, 1 = leve, 2 = moderado, 3 = fuerte")
-            st.dataframe(df_check.iloc[::-1].head(14), use_container_width=True, hide_index=True)
+            mostrar_tabla(df_check.iloc[::-1].head(14))
 
 # ==================================================
 # TAB: PROGRAMA
@@ -1052,7 +1544,7 @@ with tab_programa:
         {"Fase": f, "Semanas": d["semanas"], "Nombre": d["nombre"], "RPE": d["rpe"], "Foco": d["foco"]}
         for f, d in FASES.items()
     ])
-    st.dataframe(datos_fase, use_container_width=True, hide_index=True)
+    mostrar_tabla(datos_fase)
     st.caption("Semanas 4, 8 y 12 son de descarga: una serie menos y ~10% menos de peso.")
 
     if not rutinas:
@@ -1073,7 +1565,7 @@ with tab_programa:
 
     st.divider()
     st.markdown("**Semana tipo**")
-    st.dataframe(pd.DataFrame(SEMANA_TIPO, columns=["Día", "Sesión"]), use_container_width=True, hide_index=True)
+    mostrar_tabla(pd.DataFrame(SEMANA_TIPO, columns=["Día", "Sesión"]))
 
     st.divider()
     st.markdown("**Ajustes del programa**")
@@ -1095,6 +1587,38 @@ with tab_programa:
             st.error(f"Error al guardar: {e}")
 
     st.caption("Para cambiar ejercicios, edita la pestaña 'Rutinas' de tu Google Sheet.")
+
+# ==================================================
+# TAB: CUENTA
+# ==================================================
+with tab_cuenta:
+    st.subheader("⚙️ Cuenta")
+    st.write(f"Usuario: **{auth['usuario']}** · {'Coach (administrador)' if es_admin else 'Cliente'}")
+    if es_admin:
+        st.info("Tu contraseña de coach se cambia en Streamlit: Settings → Secrets (bloque app_auth).")
+    else:
+        with st.form("form_cambiar_pass"):
+            actual = st.text_input("Contraseña actual", type="password")
+            nueva = st.text_input("Nueva contraseña (mínimo 8 caracteres)", type="password")
+            repetir = st.text_input("Repite la nueva contraseña", type="password")
+            if st.form_submit_button("🔑 Cambiar contraseña"):
+                error = validar_password_nueva(nueva, repetir)
+                if error:
+                    st.error(error)
+                else:
+                    try:
+                        error = cambiar_password(auth["usuario"], actual, nueva)
+                    except Exception as e:
+                        error = f"No pude cambiar la contraseña: {e}"
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success("Contraseña actualizada.")
+    if st.button("Cerrar sesión", key="btn_salir2"):
+        cerrar_sesion()
+    if es_admin:
+        st.divider()
+        panel_admin()
 
 st.markdown("---")
 st.caption("Coach Lean • Programa de 12 semanas • Cambia los ejercicios desde Google Sheets")
