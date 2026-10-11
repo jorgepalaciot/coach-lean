@@ -248,32 +248,32 @@ else:
                 with st.expander(f"📌 {ejercicio}"):
 
 # Mostrar último registro del ejercicio
-            if not df.empty and "Ejercicio" in df.columns:
-                coincidencias = df[df["Ejercicio"] == ejercicio].copy()
-                if not coincidencias.empty:
-                    try:
-                        # Ordenamos por fecha para obtener el más reciente
-                        coincidencias["Fecha"] = pd.to_datetime(coincidencias["Fecha"], errors="coerce")
-                        ultimo_registro = coincidencias.sort_values("Fecha", ascending=False).iloc[0]
-                        
-                        st.markdown("### Último entrenamiento")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Peso", f"{ultimo_registro.get('Peso', '-')} kg")
-                        with col2:
-                            st.metric("Series", f"{ultimo_registro.get('Series', '-')}")
-                        with col3:
-                            st.metric("RPE", f"{ultimo_registro.get('RPE', '-')}")
-                        
-                        # Mostrar el detalle de las series si existe
-                        detalle = ultimo_registro.get("Reps", "")
-                        if detalle and str(detalle).strip() != "":
-                            st.info(f"**Detalle de series:** {detalle}")
-                        
-                        st.caption(f"Fecha: {ultimo_registro.get('Fecha', '')}")
-                        st.divider()
-                    except Exception as e:
-                        st.caption("No se pudo cargar el último registro")
+                if not df.empty and "Ejercicio" in df.columns:
+                    coincidencias = df[df["Ejercicio"] == ejercicio].copy()
+                    if not coincidencias.empty:
+                        try:
+                            # Ordenamos por fecha para obtener el más reciente
+                            coincidencias["Fecha"] = pd.to_datetime(coincidencias["Fecha"], errors="coerce")
+                            ultimo_registro = coincidencias.sort_values("Fecha", ascending=False).iloc[0]
+                            
+                            st.markdown("### Último entrenamiento")
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Peso", f"{ultimo_registro.get('Peso', '-')} kg")
+                            with col2:
+                                st.metric("Series", f"{ultimo_registro.get('Series', '-')}")
+                            with col3:
+                                st.metric("RPE", f"{ultimo_registro.get('RPE', '-')}")
+                            
+                            # Mostrar el detalle de las series si existe
+                            detalle = ultimo_registro.get("Reps", "")
+                            if detalle and str(detalle).strip() != "":
+                                st.info(f"**Detalle de series:** {detalle}")
+                            
+                            st.caption(f"Fecha: {ultimo_registro.get('Fecha', '')}")
+                            st.divider()
+                        except Exception as e:
+                            st.caption("No se pudo cargar el último registro")
                     
                     # Último peso
                     if not df.empty and "Ejercicio" in df.columns:
