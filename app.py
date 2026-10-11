@@ -110,17 +110,28 @@ RUTINAS = {
 # Funciones auxiliares
 # --------------------------
 def obtener_historial():
+    columnas = ["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"]
     try:
         sheet = get_sheet()
         data = sheet.get_all_records()
+        
         if not data:
-            return pd.DataFrame(columns=["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"])
+            return pd.DataFrame(columns=columnas)
+        
         df = pd.DataFrame(data)
-        df.columns = df.columns.str.strip()  # quita espacios accidentales
-        return df
+        df.columns = df.columns.str.strip()  # Elimina espacios accidentales
+        
+        # Aseguramos que existan todas las columnas necesarias
+        for col in columnas:
+            if col not in df.columns:
+                df[col] = None
+                
+        return df[columnas]  # Devolvemos solo las columnas correctas y en orden
     except Exception as e:
-        st.error(f"Error al leer el historial: {e}")
-        return pd.DataFrame(columns=["Fecha", "Ejercicio", "Peso", "Series", "Reps", "RPE", "Notas"])
+        st.warning(f"No se pudo leer el historial: {e}")
+        return pd.DataFrame(columns=columnas)
+
+
 def ultimo_entrenamiento_por_musculo(df):
     if df.empty or "Fecha" not in df.columns:
         return {musculo: None for musculo in DEFAULT_REST.keys()}
