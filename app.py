@@ -236,10 +236,15 @@ with tab2:
         fecha = st.date_input("Fecha", value=date.today())
         ejercicio = st.selectbox("Ejercicio", sorted(EJERCICIOS.keys()))
         
-        # Mostrar último peso
-        if not df.empty and ejercicio in df["Ejercicio"].values:
-            ultimo_peso = df[df["Ejercicio"] == ejercicio]["Peso"].iloc[-1]
-            st.caption(f"Última vez: {ultimo_peso} kg")
+      # Mostrar último peso de forma segura
+      if not df.empty and "Ejercicio" in df.columns:
+      coincidencias = df[df["Ejercicio"] == ejercicio]
+      if not coincidencias.empty and "Peso" in coincidencias.columns:
+        try:
+            ultimo_peso = coincidencias["Peso"].iloc[-1]
+            st.caption(f"Última vez levantaste: **{ultimo_peso} kg**")
+        except:
+            pass
         
         peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5)
         series = st.number_input("Series", min_value=1, value=3)
