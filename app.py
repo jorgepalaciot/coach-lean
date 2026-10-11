@@ -234,18 +234,18 @@ with tab2:
 
     with st.form("registro", clear_on_submit=True):
         fecha = st.date_input("Fecha", value=date.today())
-        ejercicio = st.selectbox("Ejercicio", sorted(EJERCICIOS.keys()))
-        
-      # Mostrar último peso de forma segura
-      if not df.empty and "Ejercicio" in df.columns:
-         coincidencias = df[df["Ejercicio"] == ejercicio]
-         if not coincidencias.empty and "Peso" in coincidencias.columns:
-             try:
-                 ultimo_peso = coincidencias["Peso"].iloc[-1]
-                 st.caption(f"Última vez levantaste: **{ultimo_peso} kg**")
-             except:
-                 pass
-        
+        ejercicio = st.selectbox("Ejercicio", sorted(list(EJERCICIOS.keys())))
+
+        # Mostrar último peso de forma segura
+        if not df.empty and "Ejercicio" in df.columns:
+            coincidencias = df[df["Ejercicio"] == ejercicio]
+            if not coincidencias.empty and "Peso" in coincidencias.columns:
+                try:
+                    ultimo_peso = coincidencias["Peso"].iloc[-1]
+                    st.caption(f"Última vez levantaste: **{ultimo_peso} kg**")
+                except:
+                    pass
+
         peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5)
         series = st.number_input("Series", min_value=1, value=3)
         reps = st.text_input("Reps (ej: 10,9,8)")
@@ -257,7 +257,7 @@ with tab2:
                 sheet = get_sheet()
                 sheet.append_row([str(fecha), ejercicio, peso, series, reps, rpe, notas])
                 st.success("✅ Guardado correctamente")
-                st.cache_resource.clear()  # limpiar cache
+                st.cache_resource.clear()
             except Exception as e:
                 st.error(f"Error: {e}")
 
