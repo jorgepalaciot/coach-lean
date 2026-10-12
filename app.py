@@ -1036,6 +1036,11 @@ def copiar_rutina_a(libro_destino):
 
 def panel_admin():
     st.markdown("### 👥 Administrar clientes")
+    
+        aviso = st.session_state.pop("aviso_admin", None)
+    if aviso:
+        st.success(aviso)
+    
     cred = st.session_state.get("credencial_nueva")
     if cred:
         st.success(f"Entrega estos datos a **{cred['usuario']}** (se muestran una sola vez):")
