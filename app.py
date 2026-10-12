@@ -988,6 +988,45 @@ def crear_cliente(usuario, nombre, email=""):
     listar_usuarios.clear()
     return password, None
 
+def _borrar_libro_via_script(nombre):
+    """Pide al Apps Script que envíe el libro del cliente a la papelera de Drive."""
+    cfg = st.secrets.get("app_auth", {})
+    url, token = cfg.get("creador_url"), cfg.get("creador_token")
+    if not url or not token:
+        raise RuntimeError("Faltan creador_url y creador_token en [app_auth] de Secrets.")
+    r = requests.post(url, json={"token": token, "nombre": nombre, "accion": "borrar"}, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"El script respondió: {data.get('error')}")
+
+def borrar_cliente(usuario, borrar_datos=True):
+    """Elimina al cliente de 'Usuarios' y, si se pide, manda su libro a la papelera. Devuelve error o None."""
+    ws = _ws_usuarios()
+    valores = ws.get_all_values()
+    if not valores:
+        return "No encontré la lista de usuarios."
+    cabecera = [c.strip() for c in valores[0]]
+    for i, fila in enumerate(valores[1:], start=2):
+        if fila and normalizar_usuario(fila[0]) == usuario:
+            libro = fila[cabecera.index("Libro")] if "Libro" in cabecera and len(fila) > cabecera.index("Libro") else ""
+            libro = libro or f"CoachLean_{usuario}"
+            if borrar_datos:
+                if libro == NOMBRE_LIBRO:
+                    return "Por seguridad no se puede borrar el libro del coach."
+                try:
+                    _borrar_libro_via_script(libro)
+                except Exception as e:
+                    return f"No pude borrar el libro del cliente: {e}"
+            ws.delete_rows(i)
+            _get_libro.clear()
+            _get_sheet.clear()
+            listar_usuarios.clear()
+            cargar_programa.clear()
+            _limpiar_caches()
+            return None
+    return "No encontré a ese cliente."
+    
 def copiar_rutina_a(libro_destino):
     origen = _get_sheet(NOMBRE_LIBRO, "Rutinas").get_all_values()
     destino = _get_sheet(libro_destino, "Rutinas")
