@@ -1180,7 +1180,8 @@ st.session_state["libro_activo"] = libro_cuenta
 try:
     _get_libro(libro_cuenta)
 except Exception as e:
-    st.error(f"No pude abrir los datos de esta cuenta: {e}")
+    st.error(f"No pude abrir los datos de esta cuenta: {e}" if es_admin
+             else "No pude cargar tus datos. Inténtalo en un minuto o avisa a tu coach.")
     st.stop()
 
 # --------------------------
@@ -1304,7 +1305,8 @@ with tab_entrenar:
         for aviso in avisos_checkin:
             st.warning(aviso)
         if not rutinas:
-            st.warning("No hay rutinas activas. Revisa la pestaña 'Rutinas' de tu Google Sheet.")
+            st.warning("No hay rutinas activas. Revisa la pestaña 'Rutinas' de tu Google Sheet." if es_admin
+                       else "Todavía no tienes una rutina asignada. Pídele a tu coach que la configure.")
         st.caption("Ordenadas según qué tan recuperados están los músculos de cada sesión. "
                    "Si faltaste unos días, la app te propone la sesión que más lo necesita.")
 
@@ -1397,7 +1399,8 @@ with tab_entrenar:
 
         ejercicios = rutinas.get(grupo, [])
         if not ejercicios:
-            st.warning("No hay ejercicios activos para esta sesión. Agrégalos en la pestaña 'Rutinas' de tu Google Sheet.")
+            st.warning("No hay ejercicios activos para esta sesión. Agrégalos en la pestaña 'Rutinas' de tu Google Sheet." if es_admin
+                       else "No hay ejercicios activos para esta sesión. Consulta con tu coach.")
 
         bloque_anterior = None
         for ejercicio in ejercicios:
@@ -1729,10 +1732,11 @@ with tab_programa:
     st.caption("Semanas 4, 8 y 12 son de descarga: una serie menos y ~10% menos de peso.")
 
     if not rutinas:
-        st.warning("No se encontraron rutinas activas. Revisa la pestaña 'Rutinas' en Google Sheets.")
+        st.warning("No se encontraron rutinas activas. Revisa la pestaña 'Rutinas' en Google Sheets." if es_admin
+                   else "Todavía no tienes una rutina asignada. Pídele a tu coach que la configure.")
     else:
         hay_f2 = any("Series_F2" in i for i in guias.values())
-        if fase >= 2 and not hay_f2:
+        if es_admin and fase >= 2 and not hay_f2:
             st.warning("Faltan las columnas Series_F2, Reps_F2, Series_F3 y Reps_F3 en la pestaña 'Rutinas'. Mientras tanto uso los valores de la Fase 1.")
         for grupo, ejercicios in rutinas.items():
             with st.expander(f"**{grupo}** ({len(ejercicios)} ejercicios)"):
@@ -1767,7 +1771,8 @@ with tab_programa:
         except Exception as e:
             st.error(f"Error al guardar: {e}")
 
-    st.caption("Para cambiar ejercicios, edita la pestaña 'Rutinas' de tu Google Sheet.")
+    if es_admin:
+        st.caption("Para cambiar ejercicios, edita la pestaña 'Rutinas' de tu Google Sheet.")
 
 # ==================================================
 # TAB: CUENTA
@@ -1804,4 +1809,4 @@ with tab_cuenta:
         panel_admin()
 
 st.markdown("---")
-st.caption("Coach Lean • Programa de 12 semanas • Cambia los ejercicios desde Google Sheets")
+st.caption("Coach Lean • Programa de 12 semanas" + (" • Cambia los ejercicios desde Google Sheets" if es_admin else ""))
