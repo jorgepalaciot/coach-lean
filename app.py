@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import re
+import requests
 import secrets as _secrets
 import threading
 import time
@@ -182,26 +183,35 @@ def libro_activo():
     """Libro de datos del usuario que se está viendo (se guarda por sesión, nunca global)."""
     return st.session_state.get("libro_activo", NOMBRE_LIBRO)
 
+def _crear_libro_via_script(nombre):
+    """Pide a tu Apps Script que cree el libro (con tu cuota) y lo comparta con la cuenta de servicio."""
+    cfg = st.secrets.get("app_auth", {})
+    url, token = cfg.get("creador_url"), cfg.get("creador_token")
+    if not url or not token:
+        raise RuntimeError("Faltan creador_url y creador_token en [app_auth] de Secrets.")
+    r = requests.post(url, json={"token": token, "nombre": nombre}, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"El creador de libros respondió: {data.get('error')}")
+    return data["id"]
+
 @st.cache_resource
 def _get_libro(nombre):
-    """Abre el libro; si es un cliente nuevo lo crea y lo comparte con el coach."""
+    """Abre el libro; si es un cliente nuevo, lo crea vía Apps Script."""
     gc = get_client()
     try:
         return gc.open(nombre)
     except gspread.SpreadsheetNotFound:
         if nombre == NOMBRE_LIBRO:
             raise
-        sh = gc.create(nombre)
-        ws = sh.sheet1
-        ws.update_title("Historial")
-        ws.append_row(HISTORIAL_COLUMNAS)
-        try:
-            correo = st.secrets["app_auth"].get("admin_email", "")
-            if correo:
-                sh.share(correo, perm_type="user", role="writer", notify=False)
-        except Exception:
-            pass
-        return sh
+        libro_id = _crear_libro_via_script(nombre)
+        for _ in range(10):  # el permiso tarda unos segundos en propagarse
+            try:
+                return gc.open_by_key(libro_id)
+            except (gspread.SpreadsheetNotFound, gspread.exceptions.APIError):
+                time.sleep(2)
+        raise RuntimeError("El libro se creó pero la cuenta de servicio aún no puede abrirlo. Inténtalo de nuevo en un minuto.")
 
 @st.cache_resource
 def _get_sheet(libro_nombre, nombre):
