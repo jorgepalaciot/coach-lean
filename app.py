@@ -1100,6 +1100,24 @@ def panel_admin():
         except Exception as e:
             st.error(f"No pude copiar la rutina: {e}")
 
+
+    st.divider()
+    st.markdown("**🗑️ Eliminar cliente**")
+    borrar_datos = st.checkbox("También enviar su libro de datos a la papelera de Drive (recuperable 30 días)",
+                               value=True, key="borrar_datos")
+    conf_txt = st.text_input(f"Escribe «{sel}» para confirmar", key=f"conf_borrar_{sel}")
+    if st.button("🗑️ Eliminar cliente", key="btn_borrar"):
+        if normalizar_usuario(conf_txt) != sel:
+            st.error("El texto de confirmación no coincide.")
+        else:
+            error = borrar_cliente(sel, borrar_datos)
+            if error:
+                st.error(error)
+            else:
+                st.session_state["aviso_admin"] = f"Cliente «{sel}» eliminado."
+                st.rerun()
+
+
 # ---------- Puerta de entrada ----------
 if "auth" not in st.session_state:
     st.session_state.auth = None
