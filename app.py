@@ -1037,7 +1037,7 @@ def copiar_rutina_a(libro_destino):
 def panel_admin():
     st.markdown("### 👥 Administrar clientes")
     
-        aviso = st.session_state.pop("aviso_admin", None)
+    aviso = st.session_state.pop("aviso_admin", None)
     if aviso:
         st.success(aviso)
     
